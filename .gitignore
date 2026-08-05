@@ -1,0 +1,30 @@
+# ---- build output ----
+/build/
+build*/
+cmake-build-*/
+
+# ---- plugin binaries ----
+*.vst3
+*.clap
+*.component
+*.au
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+*.pdb
+*.obj
+*.o
+
+# ---- IDE / OS ----
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+CMakeUserPresets.json
+
+# ---- misc ----
+*.log

@@ -1,0 +1,13 @@
+# テキストは LF に正規化（Windows/macOS/CI で差分が出ないように）
+* text=auto eol=lf
+
+# バイナリ扱い（改行変換しない）
+*.wav   binary
+*.aiff  binary
+*.flac  binary
+*.mp3   binary
+*.ogg   binary
+*.vst3  binary
+*.clap  binary
+*.png   binary
+*.jpg   binary
