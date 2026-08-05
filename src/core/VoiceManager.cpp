@@ -15,6 +15,8 @@ void VoiceManager::prepare (double sr, int maxBlock, int numChannels, host::Reap
     sampleCounter = 0;
     lastNoteOnTime = 0;
     monoNote = -1;
+    lastMonoPitch = -1.0f;
+    lastPitches.clear();
     glidePool.clear();
     currentGroup.clear();
 }
@@ -71,16 +73,26 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
     if (! poly)
     {
         Voice& v = voices[0];
-        const bool legato  = v.isActive() && ! v.isReleasing();
-        const bool doGlide = (portaMode != PortaMode::Off) && legato;
+        const bool legato = v.isActive() && ! v.isReleasing();
 
-        if (doGlide)
-            v.glideTo (note);                                   // ピッチのみ滑らす
+        if (portaMode != PortaMode::Off && legato)
+        {
+            v.glideTo (note);                                   // レガート: 今鳴っている音から滑らす
+        }
+        else if (portaMode == PortaMode::Always && lastMonoPitch >= 0.0f
+                 && lastMonoPitch != (float) note)
+        {
+            // Always: 音が切れていても直前ノートのピッチから滑らせて発音する
+            v.noteOn (sample, note, vel, s01, e01, snap, true, lastMonoPitch, useVarispeed, prePitchedSemi);
+        }
         else
+        {
             v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
+        }
 
         voiceOnTime[0] = now;
         monoNote = note;
+        lastMonoPitch = (float) note;
         lastNoteOnTime = now;
         return;
     }
@@ -88,7 +100,9 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
     // ---- Poly ----
     if (portaMode != PortaMode::Off && (now - lastNoteOnTime) > groupWindowSamples())
     {
-        snapshotGlidePool();     // 新しい和音グループの始まり
+        snapshotGlidePool();     // 新しい和音グループの始まり（今鳴っている声部から origin を採る）
+        if (portaMode == PortaMode::Always && glidePool.empty())
+            glidePool = lastPitches;   // Always: 前グループが鳴り終わっていても origin を引き継ぐ
         currentGroup.clear();
     }
     lastNoteOnTime = now;
@@ -117,6 +131,9 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
     {
         currentGroup.push_back ({ slot, note });
         rematchGroupOrigins();
+        // Always 用に「今のグループのピッチ群」を保持（次グループが gap 後でも origin にできる）
+        lastPitches.clear();
+        for (auto& g : currentGroup) lastPitches.push_back ((float) g.note);
     }
 }
 
@@ -142,6 +159,8 @@ void VoiceManager::allNotesOff()
     for (auto& v : voices)
         v.stop();
     monoNote = -1;
+    lastMonoPitch = -1.0f;
+    lastPitches.clear();
     glidePool.clear();
     currentGroup.clear();
 }

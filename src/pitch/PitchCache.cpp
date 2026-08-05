@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>   // ★診断ログ（実機検証用・後で削除）
 
 namespace otomad
 {
@@ -50,15 +49,23 @@ bool PitchCache::renderPending()
 {
     int semi = 0; bool found = false;
     {
-        // 保留ビットを1つ取り出す
-        std::uint64_t lo = reqLo.load();
+        // 保留ビットを1つ「原子的に」取り出す（複数背景スレッドが同じ半音を二重処理しないように、
+        // fetch_and の戻り値で自分がクリアした場合だけ確定する）。
         for (int b = 0; b < 64 && ! found; ++b)
-            if (lo & (1ull << b)) { reqLo.fetch_and (~(1ull << b)); semi = kMin + b; found = true; }
-        if (! found)
         {
-            std::uint64_t hi = reqHi.load();
-            for (int b = 0; b < (kN - 64) && ! found; ++b)
-                if (hi & (1ull << b)) { reqHi.fetch_and (~(1ull << b)); semi = kMin + 64 + b; found = true; }
+            const std::uint64_t mask = 1ull << b;
+            if (reqLo.load() & mask)
+            {
+                if (reqLo.fetch_and (~mask) & mask) { semi = kMin + b; found = true; }
+            }
+        }
+        for (int b = 0; b < (kN - 64) && ! found; ++b)
+        {
+            const std::uint64_t mask = 1ull << b;
+            if (reqHi.load() & mask)
+            {
+                if (reqHi.fetch_and (~mask) & mask) { semi = kMin + 64 + b; found = true; }
+            }
         }
     }
     if (! found)
@@ -100,10 +107,20 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     const int    numCh = std::max (1, src->numChannels);
     const double shift = std::pow (2.0, (double) semi / 12.0);
 
+    // 入力(元素材)ピーク（診断用・後で削除）
+    float srcPeak = 0.0f;
+    for (int ch = 0; ch < numCh; ++ch)
+        for (std::int64_t i = 0; i < src->numSamples; ++i)
+            srcPeak = std::max (srcPeak, std::abs ((float) src->sampleAtRaw (ch, i)));
+
     ps->set_srate (sr);
     ps->set_nch (numCh);
     ps->set_shift (shift);
-    ps->set_formant_shift ((double) formant);            // フォルマントを焼き込む
+    // フォルマント: set_formant_shift(0.0) は「フォルマント保持モードで0シフト」を起動し、
+    // élastique の出力をほぼ無音にする（実測: outPeak が 1/100 に低下）。API仕様では shift<0 は
+    // 「保持モード時のみ適用（＝通常のピッチシフト・フォルマント非操作）」なので、シフト無し(0)や
+    // 下方向は負値で渡して実質オフ＝フル出力にする。正の値のときだけ明示的にフォルマントを上げる。
+    ps->set_formant_shift (formant > 0.05f ? (double) formant : -1.0);
     ps->set_tempo (timeRatio > 0.0 ? timeRatio : 1.0);   // ストレッチ(長さ)を焼き込む
     ps->SetQualityParameter ((mode << 16) + sub);
     ps->Reset();
@@ -149,17 +166,25 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     // 2) 内部に溜まった本体を無音で押し出す（大レイテンシモード対策）。十分な長さになるまで、
     //    または出力がこれ以上増えなくなるまで。
     const std::int64_t maxLead = (std::int64_t) (0.3 * sr);            // 先頭で除去する上限
-    const std::int64_t target  = expectedLen + maxLead + (std::int64_t) (0.5 * sr);
-    for (int g = 0; g < 200000 && outLen() < target; ++g)
+    // 内部に溜まった本体を無音で押し出す。実音が揃う分（expLen＋先頭遅延＋余白）まで出れば十分なので
+    // そこで止める（高速化）。tempo=1 だと供給した無音がそのまま 1:1 で出力に混ざるため、target で
+    // 打ち切らないと無駄に大量の無音を処理してしまう。target・出力停止・上限のいずれかで終了。
+    const std::int64_t target     = expectedLen + maxLead + (std::int64_t) (0.25 * sr);
+    const std::int64_t maxSilence = std::max (expectedLen, n) + 2 * (std::int64_t) sr;  // 上限（保険）
+    std::int64_t silenceFed = 0;
+    int emptyStreak = 0;
+    while (silenceFed < maxSilence && outLen() < target)
     {
         if (ReaSample* b = ps->GetBuffer (chunk))
         {
             std::memset (b, 0, sizeof (ReaSample) * (std::size_t) chunk * (std::size_t) numCh);
             ps->BufferDone (chunk);
         }
+        silenceFed += chunk;
         const std::int64_t before = outLen();
         drain();
-        if (outLen() == before) break;   // これ以上出ないなら終了
+        if (outLen() == before) { if (++emptyStreak >= 16) break; }   // 持続的に無出力なら完了
+        else emptyStreak = 0;
     }
     ps->FlushSamples();
     drain();
@@ -181,13 +206,13 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     }
     const std::int64_t len = std::max<std::int64_t> (0, std::min (expectedLen, avail - onset));
 
-    // ★診断ログ（後で削除）
-    {
-        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
-        f << "render semi=" << semi << " mode=" << mode << " sub=" << sub
-          << " shift=" << shift << " onset=" << onset << " avail=" << avail
-          << " expLen=" << expectedLen << " len=" << len << " n=" << n << " peak=" << peak << "\n";
-    }
+    // メイクアップゲイン: élastique 等は時間圧縮/ピッチシフト時に全体レベルを落とすことがある
+    // （特にノイズ質感の素材を強く圧縮するとグレインの位相が揃わず peak が下がる）。
+    // 出力ピークを入力ピークまで持ち上げてレベルを保つ。増幅のみ（減衰はしない）。
+    // ほぼ無音の取りこぼしを過剰ブーストしないよう上限を設ける。
+    float makeup = 1.0f;
+    if (peak > 1.0e-4f && srcPeak > 1.0e-4f)
+        makeup = std::clamp (srcPeak / peak, 1.0f, 8.0f);
 
     auto sb = std::make_shared<SampleBuffer>();
     sb->numChannels        = numCh;
@@ -197,7 +222,7 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     sb->data.assign ((std::size_t) numCh, std::vector<float> ((std::size_t) len, 0.0f));
     for (int ch = 0; ch < numCh; ++ch)
         for (std::int64_t i = 0; i < len; ++i)
-            sb->data[(std::size_t) ch][(std::size_t) i] = out[(std::size_t) ch][(std::size_t) (onset + i)];
+            sb->data[(std::size_t) ch][(std::size_t) i] = makeup * out[(std::size_t) ch][(std::size_t) (onset + i)];
     sb->numSamples = len;
     return sb;
 }

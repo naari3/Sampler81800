@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "WaveViewState.h"
+
 class OtoMadSamplerProcessor;   // グローバル名前空間の実クラス
 
 namespace otomad::gui
@@ -16,12 +18,13 @@ class DropZone : public juce::Component,
                  public juce::FileDragAndDropTarget
 {
 public:
-    explicit DropZone (OtoMadSamplerProcessor&);
+    DropZone (OtoMadSamplerProcessor&, WaveViewState& viewState);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp   (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void fileDragEnter (const juce::StringArray&, int, int) override;
@@ -38,8 +41,11 @@ private:
     juce::RangedAudioParameter* handleParam (Handle) const;
 
     OtoMadSamplerProcessor& processor;
+    WaveViewState& view;
     bool dragHighlight = false;
     Handle drag = Handle::None;
+    bool  panning = false;      // 右ドラッグで左右スクロール中
+    float panLastX = 0.0f;
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DropZone)

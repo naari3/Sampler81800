@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -63,6 +64,18 @@ public:
                     double sampleRate, float formant, double timeRatio);
     bool hasPending() const noexcept
     { return reqLo.load() != 0 || reqHi.load() != 0; }
+
+    // --- 進捗（UI用・任意スレッドから読み取り可, atomicのみ） ---
+    // 生成済み半音数（ready 非null の数）。
+    int readyCount() const noexcept
+    {
+        int n = 0;
+        for (auto& p : ready) if (p.load (std::memory_order_acquire) != nullptr) ++n;
+        return n;
+    }
+    // 残り生成待ち半音数（リクエストビットの立っている数）。
+    int pendingCount() const noexcept
+    { return std::popcount (reqLo.load()) + std::popcount (reqHi.load()); }
 
     // --- 背景スレッド ---
     // 保留中の半音を1つレンダリングして公開する。やることがあれば true。

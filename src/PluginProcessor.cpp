@@ -5,8 +5,23 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+#include <vector>
 
 using otomad::SampleBuffer;
+
+//==============================================================================
+// 外観ブロードキャスト用のプロセス内レジストリ。同一プロセスで動く全インスタンスを束ね、
+// 「既定にする」押下時に現在の外観を全インスタンスへ即時反映する（メッセージスレッド）。
+namespace
+{
+    struct AppearanceHub
+    {
+        std::mutex m;
+        std::vector<OtoMadSamplerProcessor*> instances;
+        static AppearanceHub& get() { static AppearanceHub h; return h; }
+    };
+}
 
 //==============================================================================
 OtoMadSamplerProcessor::OtoMadSamplerProcessor()
@@ -45,11 +60,33 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
     pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
+    pTailMode      = apvts.getRawParameterValue (otomad::params::tailMode);
+    pTailPercent   = apvts.getRawParameterValue (otomad::params::tailPercent);
+    pTailMs        = apvts.getRawParameterValue (otomad::params::tailMs);
+    pTailSyncDiv   = apvts.getRawParameterValue (otomad::params::tailSyncDiv);
+
+    pendingOff.fill (-1);
+
+    loadDefaultAppearance();   // 全インスタンス共通の外観既定（あれば）。state復元があれば後で上書きされる。
+
+    // ブロードキャスト用レジストリに登録
+    {
+        auto& hub = AppearanceHub::get();
+        std::lock_guard<std::mutex> lk (hub.m);
+        hub.instances.push_back (this);
+    }
 
     startTimerHz (6);   // UI非依存でキャッシュを駆動（窓を閉じても貯まる）
 }
 
-OtoMadSamplerProcessor::~OtoMadSamplerProcessor() { stopTimer(); }
+OtoMadSamplerProcessor::~OtoMadSamplerProcessor()
+{
+    stopTimer();
+    auto& hub = AppearanceHub::get();
+    std::lock_guard<std::mutex> lk (hub.m);
+    hub.instances.erase (std::remove (hub.instances.begin(), hub.instances.end(), this),
+                         hub.instances.end());
+}
 
 //==============================================================================
 void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -58,6 +95,11 @@ void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
     lastReportedLatency = voices.getCurrentLatency();      // 既定(Varispeed)=0
     setLatencySamples (lastReportedLatency);
+
+    transportSample = 0;         // Tail 用クロック/状態をリセット
+    pendingOff.fill (-1);
+
+    prepared.store (true);   // ここで state 復元の有無が確定（setStateInformation は prepare より前）
 }
 
 bool OtoMadSamplerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -140,6 +182,9 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         setLatencySamples (lat);
     }
 
+    // Tail: 期限が来た遅延ノートオフを発火（ブロック粒度。数ms未満の誤差は許容）
+    fireDueTailOffs (transportSample);
+
     // ---- §2.2 : MIDIイベント位置でブロックを分割してレンダリング ----
     int pos = 0;
     for (const auto meta : midi)
@@ -150,12 +195,97 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             renderSlice (buffer, pos, t - pos);
             pos = t;
         }
-        handleMidiMessage (meta.getMessage());
+        handleMidiMessage (meta.getMessage(), transportSample + t);
     }
 
     const int tail = buffer.getNumSamples() - pos;
     if (tail > 0)
         renderSlice (buffer, pos, tail);
+
+    transportSample += buffer.getNumSamples();
+}
+
+// Tail 自動ノートオフのうち、発火予定サンプルがこのブロック開始以前になったものを発火する。
+void OtoMadSamplerProcessor::fireDueTailOffs (std::int64_t blockStart) noexcept
+{
+    for (int n = 0; n < kNumNotes; ++n)
+        if (pendingOff[(std::size_t) n] >= 0 && pendingOff[(std::size_t) n] <= blockStart)
+        {
+            voices.noteOff (n);
+            pendingOff[(std::size_t) n] = -1;
+        }
+}
+
+// このノートを鳴らしたときの「再生の長さ」（出力SRサンプル数）を発音時点で見積もる。
+// キャッシュ経路は事前レンダ済みバッファ長が正確。それ以外はトリム長×ピッチ/長さ制御で近似。
+std::int64_t OtoMadSamplerProcessor::samplePlayLengthSamples (int note) const noexcept
+{
+    const auto* sb = activeSample.load();
+    if (sb == nullptr || sb->numSamples <= 0)
+        return 0;
+
+    // キャッシュ経路（REAPER Shifter Natural/Manual）: 事前レンダ済みバッファ長が正確
+    if (useCachePath())
+    {
+        const int semi = juce::jlimit (otomad::PitchCache::kMin, otomad::PitchCache::kMax,
+                                       note - (int) pRootKey->load() + (int) pPitchSemi->load());
+        if (const auto* c = pitchCache.lookup (semi))
+            return c->numSamples;
+    }
+
+    const double s = pSampleStart->load(), e = pSampleEnd->load();
+    double len = std::max (0.0, e - s) * (double) sb->numSamples;   // トリム長（出力SR, 等速）
+
+    const int algo = (int) pAlgorithm->load();
+    if (algo == 0)   // Varispeed: ピッチで再生速度が変わる（長さは 1/ratio）
+    {
+        const double effSemi = pPitchSemi->load() + pPitchCents->load() * 0.01
+                             + (double) (note - (int) pRootKey->load());
+        const double ratio = std::pow (2.0, effSemi / 12.0);
+        if (ratio > 1.0e-6) len /= ratio;
+    }
+    else if ((int) pDurationMode->load() == 2)   // 長さ保持系の Manual: stretch 倍
+    {
+        len *= (double) pStretch->load();
+    }
+    return (std::int64_t) len;
+}
+
+// Tail: サンプル末尾から固定量（ms/%/Sync）を削った自動オフ位置（発音からのオフセット）。-1=無効。
+// 再生長は発音時点で判るのでレイテンシは増えない。
+std::int64_t OtoMadSamplerProcessor::computeTailAutoOffOffset (int note) const noexcept
+{
+    const int mode = (int) pTailMode->load();   // 0=Off,1=%,2=ms,3=Sync
+    if (mode <= 0)
+        return -1;
+
+    const std::int64_t playLen = samplePlayLengthSamples (note);
+    if (playLen <= 0)
+        return -1;
+
+    const double sr = hostSampleRate.load();
+    std::int64_t cut = 0;
+    if (mode == 1)        // % : 再生長に対する割合を末尾から削る
+        cut = (std::int64_t) ((double) playLen * (double) pTailPercent->load() * 0.01);
+    else if (mode == 2)   // ms
+        cut = (std::int64_t) ((double) pTailMs->load() * 0.001 * sr);
+    else                  // Sync（テンポが無ければ ms にフォールバック）
+    {
+        if (! hostBpmValid || hostBpm <= 0.0)
+            cut = (std::int64_t) ((double) pTailMs->load() * 0.001 * sr);
+        else
+        {
+            static constexpr double beatsTable[] = { 4.0/128, 4.0/64, 4.0/32, 4.0/16, 4.0/8, 4.0/4, 4.0/2, 4.0/1 };
+            const int idx = juce::jlimit (0, 7, (int) pTailSyncDiv->load());
+            cut = (std::int64_t) (beatsTable[idx] * (60.0 / hostBpm) * sr);
+        }
+    }
+    if (cut <= 0)
+        return -1;
+
+    std::int64_t off = playLen - cut;
+    const std::int64_t minOff = (std::int64_t) (0.005 * sr);   // 削りすぎても最低 5ms は鳴らす
+    return off < minOff ? minOff : off;
 }
 
 void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
@@ -172,12 +302,19 @@ void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
     voices.render (ptrs, numCh, numSamples);
 }
 
-void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) noexcept
+void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg, std::int64_t absSample) noexcept
 {
     if (msg.isNoteOn())
     {
         const int   note = msg.getNoteNumber();
         const float vel  = msg.getFloatVelocity();
+
+        // Tail: サンプル末尾から固定量を削った位置で自動オフを予約。-1なら無効。
+        if (note >= 0 && note < kNumNotes)
+        {
+            const std::int64_t off = computeTailAutoOffOffset (note);
+            pendingOff[(std::size_t) note] = off >= 0 ? absSample + off : -1;
+        }
         const float s = pSampleStart->load(), e = pSampleEnd->load();
         const bool  snap = pSnap->load() > 0.5f;
 
@@ -200,7 +337,10 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) no
     }
     else if (msg.isNoteOff())
     {
-        voices.noteOff (msg.getNoteNumber());
+        const int note = msg.getNoteNumber();
+        if (note >= 0 && note < kNumNotes)
+            pendingOff[(std::size_t) note] = -1;   // 実際の離鍵が来たら自動オフ予約は取り消し
+        voices.noteOff (note);
     }
     else if (msg.isPitchWheel())
     {
@@ -210,6 +350,7 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) no
     else if (msg.isAllNotesOff() || msg.isAllSoundOff())
     {
         voices.allNotesOff();
+        pendingOff.fill (-1);   // 保留中の Tail オフも破棄
     }
 }
 
@@ -262,8 +403,40 @@ juce::StringArray OtoMadSamplerProcessor::getReaperSubModeNames (int mode) const
     return a;
 }
 
+void OtoMadSamplerProcessor::maybeApplyDefaultReaperMode()
+{
+    if (reaperDefaultChecked || ! prepared.load() || ! reaperApi.isAvailable())
+        return;
+    reaperDefaultChecked = true;
+    if (stateWasRestored.load())
+        return;   // 復元済みインスタンスはユーザ設定を尊重
+
+    // 新規インスタンス: 既定を élastique Soloist に。名前で解決（版によりインデックスが変わるため）。
+    const auto modes = getReaperModeNames();
+    int soloist = -1;
+    for (int i = 0; i < modes.size(); ++i)               // 新しい版(3.x)の Soloist を優先
+        if (modes[i].containsIgnoreCase ("soloist") && modes[i].contains ("3.")) { soloist = i; break; }
+    if (soloist < 0)
+        for (int i = 0; i < modes.size(); ++i)           // 無ければ任意の Soloist
+            if (modes[i].containsIgnoreCase ("soloist")) { soloist = i; break; }
+    if (soloist < 0)
+        return;   // Soloist が見つからないホスト/版では既定のまま
+
+    int sub = 0;                                         // サブモードは Monophonic 優先
+    const auto subs = getReaperSubModeNames (soloist);
+    for (int i = 0; i < subs.size(); ++i)
+        if (subs[i].containsIgnoreCase ("mono")) { sub = i; break; }
+
+    if (auto* pm = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (otomad::params::reaperMode)))
+        *pm = soloist;
+    if (auto* ps = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (otomad::params::reaperSubMode)))
+        *ps = sub;
+}
+
 void OtoMadSamplerProcessor::serviceCache()
 {
+    maybeApplyDefaultReaperMode();   // 新規インスタンスの初期モード（Soloist）を一度だけ適用
+
     // Manual のときは stretchAmount から timeRatio を算出（Natural は 1.0）
     double timeRatio = 1.0;
     if ((int) pDurationMode->load() == 2)
@@ -284,13 +457,20 @@ void OtoMadSamplerProcessor::serviceCache()
         pitchCache.requestRange (c - 48, c + 48);
     }
 
-    // 保留中の音程があれば背景スレッドでレンダリング（多重起動しない）
-    if (pitchCache.hasPending() && ! cacheJobRunning.exchange (true))
-        loadPool.addJob ([this]
+    // 保留中の音程があれば背景スレッドで並列レンダリング。cacheThreads 本まで稼働数を補充する。
+    // 各ジョブは renderPending を空になるまで回し、完了したら稼働数を減らす。
+    if (pitchCache.hasPending())
+    {
+        while (cacheJobsActive.load() < cacheThreads)
         {
-            while (pitchCache.renderPending()) {}
-            cacheJobRunning.store (false);
-        });
+            cacheJobsActive.fetch_add (1);
+            loadPool.addJob ([this]
+            {
+                while (pitchCache.renderPending()) {}
+                cacheJobsActive.fetch_sub (1);
+            });
+        }
+    }
 }
 
 void OtoMadSamplerProcessor::reconfigureReaperMode()
@@ -319,6 +499,28 @@ void OtoMadSamplerProcessor::normalizeSample()
     sampleVersion.fetch_add (1);   // 波形表示を更新させる
 }
 
+void OtoMadSamplerProcessor::setBackgroundImageFromFile (const juce::File& file)
+{
+    juce::FileInputStream in (file);
+    if (! in.openedOk())
+        return;
+    juce::Image img = juce::ImageFileFormat::loadFrom (in);
+    if (! img.isValid())
+        return;
+
+    // 保存用に PNG へ再エンコード（形式非依存で state に埋め込める）
+    juce::MemoryBlock png;
+    {
+        juce::MemoryOutputStream os (png, false);
+        juce::PNGImageFormat fmt;
+        if (! fmt.writeImageToStream (img, os))
+            return;
+    }
+    bgImage = img;
+    bgPng   = png;
+    appearanceVersion.fetch_add (1);
+}
+
 //==============================================================================
 void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
@@ -333,6 +535,7 @@ void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
         auto* se = root->createNewChildElement ("sample");
         se->setAttribute ("name", juce::String (sb->name));
         se->setAttribute ("path", juce::String (sb->path));
+        se->setAttribute ("normGain", (double) normGain.load());   // ノーマライズ倍率を保存
 
         juce::MemoryBlock flacData;
         float normScale = 1.0f;
@@ -349,6 +552,9 @@ void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
             se->setAttribute ("embedded", 0);
         }
     }
+
+    // 外観設定（メインカラー / 背景透過率 / 背景画像PNG）
+    writeAppearance (*root->createNewChildElement ("appearance"));
 
     copyXmlToBinary (*root, destData);
 }
@@ -371,10 +577,90 @@ void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBy
     }
 
     if (apvtsXml != nullptr)
+    {
         apvts.replaceState (juce::ValueTree::fromXml (*apvtsXml));
+        stateWasRestored.store (true);   // 復元済み → 初期モード自動設定はしない
+    }
 
     if (sampleXml != nullptr)
+    {
         restoreSample (*sampleXml);
+        // ノーマライズ倍率を復元（restoreSample→publishSample が 1.0 に戻すので後で上書き）
+        normGain.store ((float) sampleXml->getDoubleAttribute ("normGain", 1.0));
+    }
+
+    // 外観設定の復元（state に無ければコンストラクタで読んだ共通既定のまま）
+    if (auto* ae = xml->getChildByName ("appearance"))
+        readAppearance (*ae);
+}
+
+//==============================================================================
+juce::File OtoMadSamplerProcessor::defaultAppearanceFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+             .getChildFile ("OtoMadSampler").getChildFile ("appearance.xml");
+}
+
+void OtoMadSamplerProcessor::writeAppearance (juce::XmlElement& ae) const
+{
+    ae.setAttribute ("mainColour", juce::String::toHexString ((int) mainColour.load()));
+    ae.setAttribute ("bgOpacity", (double) bgOpacity.load());
+    if (bgPng.getSize() > 0)
+        ae.addTextElement (bgPng.toBase64Encoding());
+}
+
+void OtoMadSamplerProcessor::readAppearance (const juce::XmlElement& ae)
+{
+    if (ae.hasAttribute ("mainColour"))
+        mainColour.store ((juce::uint32) ae.getStringAttribute ("mainColour").getHexValue64());
+    bgOpacity.store (juce::jlimit (0.0f, 1.0f, (float) ae.getDoubleAttribute ("bgOpacity", (double) bgOpacity.load())));
+
+    const auto b64 = ae.getAllSubText().trim();
+    bgImage = juce::Image();
+    bgPng.reset();
+    if (b64.isNotEmpty() && bgPng.fromBase64Encoding (b64) && bgPng.getSize() > 0)
+        bgImage = juce::ImageFileFormat::loadFrom (bgPng.getData(), bgPng.getSize());
+
+    appearanceVersion.fetch_add (1);
+}
+
+void OtoMadSamplerProcessor::loadDefaultAppearance()
+{
+    const auto f = defaultAppearanceFile();
+    if (! f.existsAsFile())
+        return;
+    if (auto xml = juce::XmlDocument::parse (f))
+        if (xml->hasTagName ("appearance"))
+            readAppearance (*xml);
+}
+
+void OtoMadSamplerProcessor::applyBroadcastAppearance (juce::uint32 argb, float opacity,
+                                                       const juce::MemoryBlock& png)
+{
+    mainColour.store (argb);
+    bgOpacity.store (juce::jlimit (0.0f, 1.0f, opacity));
+    bgPng   = png;
+    bgImage = png.getSize() > 0 ? juce::ImageFileFormat::loadFrom (png.getData(), png.getSize())
+                                : juce::Image();
+    appearanceVersion.fetch_add (1);   // 各インスタンスのエディタがタイマで拾って再描画する
+}
+
+void OtoMadSamplerProcessor::saveAppearanceAsDefault()
+{
+    juce::XmlElement ae ("appearance");
+    writeAppearance (ae);
+    const auto f = defaultAppearanceFile();
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (ae.toString());
+
+    // 即時ブロードキャスト: 同一プロセス内の全インスタンスへ現在の外観を反映
+    const auto argb = mainColour.load();
+    const auto op   = bgOpacity.load();
+    auto& hub = AppearanceHub::get();
+    std::lock_guard<std::mutex> lk (hub.m);
+    for (auto* inst : hub.instances)
+        if (inst != this)
+            inst->applyBroadcastAppearance (argb, op, bgPng);
 }
 
 void OtoMadSamplerProcessor::restoreSample (const juce::XmlElement& se)

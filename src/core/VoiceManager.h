@@ -81,6 +81,9 @@ private:
     std::uint64_t lastNoteOnTime = 0;
     int           monoNote = -1;
 
+    // Always モード用: 音が切れても直前のピッチから滑らせるための保持（reset/allNotesOff でのみクリア）。
+    float                         lastMonoPitch = -1.0f;   // Mono: 直前ノートのピッチ（-1=無し）
+    std::vector<float>            lastPitches;              // Poly: 直前グループのピッチ群
     std::vector<float>            glidePool;
     struct GroupEntry { int slot; int note; };
     std::vector<GroupEntry>       currentGroup;

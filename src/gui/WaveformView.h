@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "WaveViewState.h"
+
 class OtoMadSamplerProcessor;   // グローバル名前空間の実クラス
 
 namespace otomad::gui
@@ -16,7 +18,7 @@ class WaveformView : public juce::Component,
                      private juce::Timer
 {
 public:
-    explicit WaveformView (OtoMadSamplerProcessor&);
+    WaveformView (OtoMadSamplerProcessor&, WaveViewState& viewState);
     ~WaveformView() override;
 
     void paint (juce::Graphics&) override;
@@ -25,6 +27,7 @@ private:
     void timerCallback() override;
 
     OtoMadSamplerProcessor& processor;
+    WaveViewState& view;
     int lastSampleVersion = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformView)

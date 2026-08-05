@@ -1,0 +1,52 @@
+name: release
+
+# タグ v* を push すると各OSでビルドし、成果物(VST3)を zip にして
+# そのタグの GitHub Release に添付する。手動(workflow_dispatch)ではビルドのみ。
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # Release への書き込み(添付)に必要
+
+jobs:
+  release:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo -j 4
+
+      - name: Test
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
+      # VST3 はビルド構成(単一/複数)で出力パスが変わるので find で探して zip 化する。
+      # cmake -E tar は Windows/macOS 共通で zip を作れる。
+      - name: Package VST3
+        shell: bash
+        run: |
+          set -e
+          VST3=$(find build -type d -name 'OtoMadSampler.vst3' | head -1)
+          if [ -z "$VST3" ]; then echo "VST3 not found"; exit 1; fi
+          echo "found: $VST3"
+          OUT="$GITHUB_WORKSPACE/OtoMadSampler-${{ runner.os }}.zip"
+          ( cd "$(dirname "$VST3")" && cmake -E tar cfv "$OUT" --format=zip "OtoMadSampler.vst3" )
+          echo "packaged: $OUT"
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OtoMadSampler-${{ runner.os }}.zip
+          generate_release_notes: true
