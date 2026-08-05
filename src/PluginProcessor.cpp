@@ -41,13 +41,14 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pStretch     = apvts.getRawParameterValue (otomad::params::stretchAmount);
     pFormant     = apvts.getRawParameterValue (otomad::params::formant);
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
+    pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
 }
 
 //==============================================================================
 void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     hostSampleRate.store (sampleRate);
-    voices.prepare (sampleRate, samplesPerBlock, 2);
+    voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
     setLatencySamples (otomad::kFixedLatency);   // 固定レイテンシ (§5.5)
 }
 
@@ -95,6 +96,7 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     ec.hostBpmValid = hostBpmValid;
     ec.formantSemi  = pFormant->load();
     ec.phaseLock    = pPhaseLock->load() > 0.5f;
+    ec.reaperSubMode = (int) pReaperSubMode->load();
     voices.setEngineControl (ec);
 }
 

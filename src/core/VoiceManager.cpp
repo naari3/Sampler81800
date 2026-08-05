@@ -5,12 +5,12 @@
 namespace otomad
 {
 
-void VoiceManager::prepare (double sr, int maxBlock, int numChannels)
+void VoiceManager::prepare (double sr, int maxBlock, int numChannels, host::ReaperApi* reaperApi)
 {
     sampleRate = sr;
     resources.prepare (sr);
     for (auto& v : voices)
-        v.prepare (sr, maxBlock, numChannels, resources);
+        v.prepare (sr, maxBlock, numChannels, resources, reaperApi);
     voiceOnTime.fill (0);
     sampleCounter = 0;
     lastNoteOnTime = 0;

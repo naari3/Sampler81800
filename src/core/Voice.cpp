@@ -1,4 +1,5 @@
 #include "Voice.h"
+#include "host/ReaperApi.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +7,8 @@
 namespace otomad
 {
 
-void Voice::prepare (double sr, int maxBlock, int numChannels, EngineResources& resources)
+void Voice::prepare (double sr, int maxBlock, int numChannels,
+                     EngineResources& resources, host::ReaperApi* reaperApi)
 {
     sampleRate       = sr;
     preparedChannels = juce::jmax (1, numChannels);
@@ -26,6 +28,8 @@ void Voice::prepare (double sr, int maxBlock, int numChannels, EngineResources& 
     varispeed.prepare (ctx, resources);
     wsola.prepare (ctx, resources);
     phaseVocoder.prepare (ctx, resources);
+    reaper.setReaperApi (reaperApi);
+    reaper.prepare (ctx, resources);   // 非REAPERなら isAvailable()==false のまま
     activeEngine = &varispeed;
 
     adsr.setSampleRate (sr);
@@ -59,14 +63,18 @@ IPitchEngine* Voice::pickEngine (int algorithm) noexcept
         case 0: fallbackActive = false; return &varispeed;
         case 1: fallbackActive = false; return &wsola;
         case 2: fallbackActive = false; return &phaseVocoder;
-        default:                        // 3-5 は未実装 → 規約2: 代替(PV)に落とす
-            fallbackActive = true;      return &phaseVocoder;
+        case 5:                         // REAPER Shifter: REAPER上でのみ実動作
+            if (reaper.isAvailable()) { fallbackActive = false; return &reaper; }
+            fallbackActive = true;    return &phaseVocoder;   // 規約2: 代替(PV)へ
+        default:                        // 3,4 は未実装 → 規約2
+            fallbackActive = true;    return &phaseVocoder;
     }
 }
 
 void Voice::setEngineControl (const EngineControl& c) noexcept
 {
     control = c;
+    reaper.setSubMode (c.reaperSubMode);
     activeEngine = pickEngine (c.algorithm);
     phaseVocoder.setPhaseLock (c.phaseLock);
 }

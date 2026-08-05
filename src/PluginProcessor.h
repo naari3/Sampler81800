@@ -9,6 +9,7 @@
 
 #include "core/SampleBuffer.h"
 #include "core/VoiceManager.h"
+#include "host/ReaperApi.h"
 
 namespace otomad { }
 
@@ -20,11 +21,16 @@ namespace otomad { }
     VarispeedEngine(Linear/Hermite)、pitch/rootKey/ADSR、モノフォニック。
     §2.2 の MIDIサブブロック分割は Phase 0 から維持。
 */
-class OtoMadSamplerProcessor : public juce::AudioProcessor
+class OtoMadSamplerProcessor : public juce::AudioProcessor,
+                               public juce::VST3ClientExtensions
 {
 public:
     OtoMadSamplerProcessor();
     ~OtoMadSamplerProcessor() override = default;
+
+    // VST3 経由で REAPER ホストAPIを取得する（§5.2）。メッセージスレッドで呼ばれる。
+    juce::VST3ClientExtensions* getVST3ClientExtensions() override { return this; }
+    void setIHostApplication (Steinberg::FUnknown* ptr) override { reaperApi.attachFromVST3 ((void*) ptr); }
 
     //==========================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -60,6 +66,8 @@ public:
     juce::MidiKeyboardState& getKeyboardState() noexcept    { return keyboardState; }
     const otomad::SampleBuffer* getActiveSample() const noexcept { return activeSample.load(); }
     int  getSampleVersion() const noexcept { return sampleVersion.load(); }
+    bool isEngineFallbackActive() const noexcept { return voices.isFallbackActive(); }
+    bool isReaperAvailable() const noexcept { return reaperApi.isAvailable(); }
 
     // メッセージスレッドから呼ぶ。バックグラウンドで読み込み、完了後にアトミック公開。
     void loadSampleFromFile (const juce::File& file);
@@ -77,6 +85,7 @@ private:
     juce::ThreadPool         loadPool { 1 };
 
     otomad::VoiceManager voices;
+    otomad::host::ReaperApi reaperApi;
 
     std::atomic<double> hostSampleRate { 44100.0 };
 
@@ -114,6 +123,7 @@ private:
     std::atomic<float>* pStretch     = nullptr;
     std::atomic<float>* pFormant     = nullptr;
     std::atomic<float>* pPhaseLock   = nullptr;
+    std::atomic<float>* pReaperSubMode = nullptr;
 
     double hostBpm = 120.0;
     bool   hostBpmValid = false;

@@ -11,6 +11,7 @@
 
 namespace otomad
 {
+namespace host { class ReaperApi; }
 
 //==============================================================================
 /**
@@ -25,7 +26,7 @@ public:
 
     enum class PortaMode { Off = 0, Legato = 1, Always = 2 };
 
-    void prepare (double sampleRate, int maxBlock, int numChannels);
+    void prepare (double sampleRate, int maxBlock, int numChannels, host::ReaperApi* reaperApi);
 
     void setVoiceParams (const Voice::Params& p) noexcept { baseParams = p; }
     void setAdsr (float a, float d, float s, float r) noexcept { aA = a; aD = d; aS = s; aR = r; }
@@ -34,7 +35,7 @@ public:
     void setPoly (bool p, int maxV) noexcept { poly = p; maxVoices = juce::jlimit (1, kMaxVoices, maxV); }
     void setPitchBendSemi (float s) noexcept { bendSemi = s; }
     void setEngineControl (const Voice::EngineControl& c) noexcept { engineControl = c; }
-    bool isFallbackActive() const noexcept { return engineControl.algorithm > 2; }
+    bool isFallbackActive() const noexcept { return voices[0].isFallbackActive(); }
 
     void noteOn (int note, float velocity, const SampleBuffer* sample,
                  float sampleStart01, float sampleEnd01, bool snapZeroCross);

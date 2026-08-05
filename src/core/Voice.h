@@ -10,9 +10,12 @@
 #include "pitch/VarispeedEngine.h"
 #include "pitch/WsolaEngine.h"
 #include "pitch/PhaseVocoderEngine.h"
+#include "pitch/ReaperPitchShiftEngine.h"
 
 namespace otomad
 {
+namespace host { class ReaperApi; }
+
 
 // 固定レイテンシ (§5.5)。WSOLA/PV の intrinsic (=frame/fft=2048) を覆う定数。
 inline constexpr int kFixedLatency = 2048;
@@ -45,9 +48,11 @@ public:
         bool  hostBpmValid  = false;
         float formantSemi   = 0.0f;
         bool  phaseLock     = true;
+        int   reaperSubMode = 0;
     };
 
-    void prepare (double sampleRate, int maxBlock, int numChannels, EngineResources& resources);
+    void prepare (double sampleRate, int maxBlock, int numChannels,
+                  EngineResources& resources, host::ReaperApi* reaperApi);
     void setParams (const Params& p) noexcept { params = p; }
     void setAdsr (float attackSec, float decaySec, float sustain, float releaseSec) noexcept;
     void setPortamentoConfig (PortamentoGenerator::Shape shape, float timeMs, float curve) noexcept;
@@ -94,11 +99,12 @@ private:
     double sampleRate = 44100.0;
 
     SourceReader        reader;
-    VarispeedEngine     varispeed;
-    WsolaEngine         wsola;
-    PhaseVocoderEngine  phaseVocoder;
-    IPitchEngine*       activeEngine = &varispeed;
-    bool                fallbackActive = false;
+    VarispeedEngine        varispeed;
+    WsolaEngine            wsola;
+    PhaseVocoderEngine     phaseVocoder;
+    ReaperPitchShiftEngine reaper;
+    IPitchEngine*          activeEngine = &varispeed;
+    bool                   fallbackActive = false;
 
     juce::ADSR          adsr;
     juce::ADSR::Parameters adsrParams;

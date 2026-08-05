@@ -50,8 +50,10 @@ target_sources(OtoMadSampler PRIVATE
     src/pitch/VarispeedEngine.cpp
     src/pitch/WsolaEngine.cpp
     src/pitch/PhaseVocoderEngine.cpp
+    src/pitch/ReaperPitchShiftEngine.cpp
     src/pitch/EngineResources.cpp
     src/pitch/dsp/Fft.cpp
+    src/host/ReaperApi.cpp
     src/gui/DropZone.cpp
     src/gui/WaveformView.cpp)
 
@@ -75,6 +77,7 @@ target_link_libraries(OtoMadSampler
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
+        juce::juce_vst3_headers   # VST3 SDK ヘッダ（REAPER連携の IHostApplication 取得用, §5.2）
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
