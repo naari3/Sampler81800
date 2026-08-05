@@ -44,6 +44,9 @@ target_sources(OtoMadSampler PRIVATE
     src/core/SampleLoader.cpp
     src/core/SourceReader.cpp
     src/core/Voice.cpp
+    src/core/VoiceManager.cpp
+    src/core/PortamentoGenerator.cpp
+    src/core/GlideMatcher.cpp
     src/pitch/VarispeedEngine.cpp
     src/gui/DropZone.cpp
     src/gui/WaveformView.cpp)

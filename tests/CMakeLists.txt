@@ -14,7 +14,12 @@ add_executable(otomad_tests
     test_placeholder.cpp
     test_source_reader.cpp
     test_varispeed.cpp
+    test_portamento.cpp
+    test_glide.cpp
+    test_voice_alloc.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/PortamentoGenerator.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/GlideMatcher.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/VarispeedEngine.cpp)
 
 target_include_directories(otomad_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

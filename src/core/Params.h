@@ -19,6 +19,15 @@ inline constexpr const char* sampleStart   = "sampleStart";
 inline constexpr const char* sampleEnd     = "sampleEnd";
 inline constexpr const char* snapZeroCross = "snapZeroCross";
 inline constexpr const char* gain          = "gain";
+// Phase 2
+inline constexpr const char* portaMode     = "portaMode";
+inline constexpr const char* portaShape    = "portaShape";
+inline constexpr const char* portaTime     = "portaTime";
+inline constexpr const char* portaCurve    = "portaCurve";
+inline constexpr const char* glideGroupMs  = "glideGroupMs";
+inline constexpr const char* polyMode      = "polyMode";
+inline constexpr const char* maxVoices     = "maxVoices";
+inline constexpr const char* bendRange     = "bendRange";
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -48,6 +57,23 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { gain, 1 }, "Gain",
                                                        NormalisableRange<float> (-60.0f, 12.0f, 0.1f), 0.0f));
+
+    // Phase 2: ポルタメント / ポリ / ベンド
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { portaMode, 1 }, "Porta Mode",
+                                                        StringArray { "Off", "Legato", "Always" }, 1));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { portaShape, 1 }, "Porta Shape",
+                                                        StringArray { "Time", "Analog" }, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { portaTime, 1 }, "Porta Time",
+                                                       msRange(), 80.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { portaCurve, 1 }, "Porta Curve",
+                                                       NormalisableRange<float> (-1.0f, 1.0f, 0.01f), 0.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { glideGroupMs, 1 }, "Glide Group",
+                                                       NormalisableRange<float> (0.0f, 100.0f, 1.0f), 30.0f));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { polyMode, 1 }, "Poly Mode",
+                                                        StringArray { "Mono", "Poly" }, 0));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { maxVoices, 1 }, "Max Voices", 1, 16, 8));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { bendRange, 1 }, "Bend Range", 0, 48, 2));
+
     return layout;
 }
 

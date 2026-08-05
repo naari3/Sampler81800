@@ -14,54 +14,112 @@ void Voice::prepare (double sr, int maxBlock, int numChannels)
     scratch.assign ((std::size_t) preparedChannels,
                     std::vector<float> ((std::size_t) preparedBlock, 0.0f));
     scratchPtrs.assign ((std::size_t) preparedChannels, nullptr);
+    noteBuf.assign ((std::size_t) preparedBlock, 0.0f);
     ratioBuf.assign ((std::size_t) preparedBlock, 1.0f);
 
     adsr.setSampleRate (sr);
+    porta.setSampleRate (sr);
     active = false;
+    stealing = false;
+    stealGain = 1.0f;
 }
 
-void Voice::setAdsr (float attackSec, float decaySec, float sustain, float releaseSec) noexcept
+void Voice::setAdsr (float a, float d, float s, float r) noexcept
 {
-    adsrParams.attack  = juce::jmax (0.0f, attackSec);
-    adsrParams.decay   = juce::jmax (0.0f, decaySec);
-    adsrParams.sustain = juce::jlimit (0.0f, 1.0f, sustain);
-    adsrParams.release = juce::jmax (0.001f, releaseSec);
+    adsrParams.attack  = juce::jmax (0.0f, a);
+    adsrParams.decay   = juce::jmax (0.0f, d);
+    adsrParams.sustain = juce::jlimit (0.0f, 1.0f, s);
+    adsrParams.release = juce::jmax (0.001f, r);
 }
 
-void Voice::noteOn (const SampleBuffer* sample, int note, float vel,
-                    float s01, float e01, bool snap)
+void Voice::setPortamentoConfig (PortamentoGenerator::Shape shape, float timeMs, float curve) noexcept
 {
-    if (sample == nullptr || sample->numSamples <= 0)
+    porta.setShape (shape);
+    porta.setTime (timeMs);
+    porta.setCurve (curve);
+}
+
+void Voice::startNote (const Pending& p) noexcept
+{
+    if (p.sample == nullptr || p.sample->numSamples <= 0)
     {
         active = false;
         return;
     }
 
-    midiNote = note;
-    velocity = juce::jlimit (0.0f, 1.0f, vel);
+    midiNote = p.note;
+    velocity = juce::jlimit (0.0f, 1.0f, p.vel);
 
-    const auto n = sample->numSamples;
-    const auto s = (std::int64_t) std::floor ((double) juce::jlimit (0.0f, 1.0f, s01) * (double) n);
-    const auto e = (std::int64_t) std::ceil  ((double) juce::jlimit (0.0f, 1.0f, e01) * (double) n);
-    reader.configure (sample, s, e, snap);
+    const auto n = p.sample->numSamples;
+    const auto s = (std::int64_t) std::floor ((double) juce::jlimit (0.0f, 1.0f, p.s01) * (double) n);
+    const auto e = (std::int64_t) std::ceil  ((double) juce::jlimit (0.0f, 1.0f, p.e01) * (double) n);
+    reader.configure (p.sample, s, e, p.snap);
 
     srcPos = 0.0;
     sourceReleaseTriggered = false;
+    released = false;
 
-    adsr.setParameters (adsrParams);   // 発音時に確定（§3.8: 発音中は変えない）
+    if (p.glide)
+        porta.startGlide (p.originNote, (float) p.note);
+    else
+        porta.startAt ((float) p.note);
+
+    adsr.setParameters (adsrParams);
     adsr.noteOn();
     active = true;
+    stealing = false;
+    stealGain = 1.0f;
+}
+
+void Voice::noteOn (const SampleBuffer* sample, int note, float vel,
+                    float s01, float e01, bool snap, bool glide, float originNote)
+{
+    startNote (Pending { sample, note, vel, s01, e01, snap, glide, originNote });
+}
+
+void Voice::requestSteal (const SampleBuffer* sample, int note, float vel,
+                          float s01, float e01, bool snap, bool glide, float originNote)
+{
+    Pending p { sample, note, vel, s01, e01, snap, glide, originNote };
+    if (! active)
+    {
+        startNote (p);
+        return;
+    }
+    pending   = p;
+    stealing  = true;
+    stealGain = 1.0f;
+    stealStep = -(float) (1.0 / (0.005 * sampleRate));   // 5ms フェードアウト
+}
+
+void Voice::glideTo (int note) noexcept
+{
+    if (! active)
+        return;
+    porta.setTarget ((float) note);
+    midiNote = note;
+    released = false;     // レガートで再びホールド扱い
+}
+
+void Voice::setGlideOrigin (float originNote) noexcept
+{
+    porta.setOrigin (originNote);
 }
 
 void Voice::noteOff() noexcept
 {
-    if (active)
+    if (active && ! stealing)
+    {
         adsr.noteOff();
+        released = true;
+    }
 }
 
 void Voice::stop() noexcept
 {
     active = false;
+    stealing = false;
+    stealGain = 1.0f;
     adsr.reset();
 }
 
@@ -72,12 +130,12 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
 
     const int nch = juce::jmin (numChannels, preparedChannels);
 
-    // Phase 1 はブロック内一定のピッチ比（ポルタメントは Phase 2）
-    const float semis = params.pitchSemi + params.pitchCents * 0.01f
-                      + (float) (midiNote - params.rootKey);
-    const float ratio = std::pow (2.0f, semis / 12.0f);
+    // ピッチ: ノート番号(porta) を基準に offset/cents/bend/rootKey を足して比へ
+    porta.process (noteBuf.data(), n);
+    const float base = params.pitchSemi + params.pitchCents * 0.01f
+                     + params.pitchBendSemi - (float) params.rootKey;
     for (int i = 0; i < n; ++i)
-        ratioBuf[(std::size_t) i] = ratio;
+        ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base) / 12.0f);
 
     engine.setQuality (params.quality);
     for (int ch = 0; ch < nch; ++ch)
@@ -85,22 +143,34 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
 
     engine.process (reader, srcPos, scratchPtrs.data(), nch, n, ratioBuf.data());
 
-    // 素材を読み切ったらリリース開始（ワンショットの語尾。Varispeed はテール0）
     if (! sourceReleaseTriggered && reader.isFinished (srcPos))
     {
         adsr.noteOff();
+        released = true;
         sourceReleaseTriggered = true;
     }
 
     for (int i = 0; i < n; ++i)
     {
-        const float env = adsr.getNextSample() * velocity * params.gainLin;
+        float g = adsr.getNextSample() * velocity * params.gainLin;
+        if (stealing)
+        {
+            g *= stealGain;
+            stealGain += stealStep;
+            if (stealGain < 0.0f) stealGain = 0.0f;
+        }
         for (int ch = 0; ch < nch; ++ch)
-            out[ch][i] += scratch[(std::size_t) ch][(std::size_t) i] * env;
+            out[ch][i] += scratch[(std::size_t) ch][(std::size_t) i] * g;
     }
 
-    if (! adsr.isActive())
+    if (stealing && stealGain <= 0.0f)
+    {
+        startNote (pending);        // フェード完了 → 予約ノートを発音
+    }
+    else if (! stealing && ! adsr.isActive())
+    {
         active = false;
+    }
 }
 
 } // namespace otomad

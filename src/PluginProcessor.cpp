@@ -27,14 +27,21 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pSampleEnd   = apvts.getRawParameterValue (otomad::params::sampleEnd);
     pSnap        = apvts.getRawParameterValue (otomad::params::snapZeroCross);
     pGain        = apvts.getRawParameterValue (otomad::params::gain);
+    pPortaMode   = apvts.getRawParameterValue (otomad::params::portaMode);
+    pPortaShape  = apvts.getRawParameterValue (otomad::params::portaShape);
+    pPortaTime   = apvts.getRawParameterValue (otomad::params::portaTime);
+    pPortaCurve  = apvts.getRawParameterValue (otomad::params::portaCurve);
+    pGlideGroup  = apvts.getRawParameterValue (otomad::params::glideGroupMs);
+    pPolyMode    = apvts.getRawParameterValue (otomad::params::polyMode);
+    pMaxVoices   = apvts.getRawParameterValue (otomad::params::maxVoices);
+    pBendRange   = apvts.getRawParameterValue (otomad::params::bendRange);
 }
 
 //==============================================================================
 void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     hostSampleRate.store (sampleRate);
-    voice.prepare (sampleRate, samplesPerBlock, 2);
-    currentNote = -1;
+    voices.prepare (sampleRate, samplesPerBlock, 2);
 }
 
 bool OtoMadSamplerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -57,12 +64,19 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     vp.gainLin    = juce::Decibels::decibelsToGain (pGain->load());
     vp.quality    = ((int) pInterp->load() == 0) ? otomad::VarispeedEngine::Quality::Linear
                                                  : otomad::VarispeedEngine::Quality::Hermite;
-    voice.setParams (vp);
+    voices.setVoiceParams (vp);
 
-    voice.setAdsr (pAttack->load()  * 0.001f,
-                   pDecay->load()   * 0.001f,
-                   pSustain->load(),
-                   pRelease->load() * 0.001f);
+    voices.setAdsr (pAttack->load()  * 0.001f,
+                    pDecay->load()   * 0.001f,
+                    pSustain->load(),
+                    pRelease->load() * 0.001f);
+
+    voices.setPortamento ((otomad::VoiceManager::PortaMode) (int) pPortaMode->load(),
+                          ((int) pPortaShape->load() == 0) ? otomad::PortamentoGenerator::Shape::Time
+                                                           : otomad::PortamentoGenerator::Shape::Analog,
+                          pPortaTime->load(), pPortaCurve->load(), pGlideGroup->load());
+
+    voices.setPoly ((int) pPolyMode->load() == 1, (int) pMaxVoices->load());
 }
 
 void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
@@ -107,33 +121,28 @@ void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
     for (int ch = 0; ch < numCh; ++ch)
         ptrs[ch] = buffer.getWritePointer (ch) + startSample;
 
-    voice.render (ptrs, numCh, numSamples);
+    voices.render (ptrs, numCh, numSamples);
 }
 
 void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) noexcept
 {
     if (msg.isNoteOn())
     {
-        const int   note = msg.getNoteNumber();
-        const float vel  = msg.getFloatVelocity();
-
-        voice.noteOn (activeSample.load(), note, vel,
-                      pSampleStart->load(), pSampleEnd->load(),
-                      pSnap->load() > 0.5f);
-        currentNote = note;
+        voices.noteOn (msg.getNoteNumber(), msg.getFloatVelocity(), activeSample.load(),
+                       pSampleStart->load(), pSampleEnd->load(), pSnap->load() > 0.5f);
     }
     else if (msg.isNoteOff())
     {
-        if (msg.getNoteNumber() == currentNote)
-        {
-            voice.noteOff();
-            currentNote = -1;
-        }
+        voices.noteOff (msg.getNoteNumber());
+    }
+    else if (msg.isPitchWheel())
+    {
+        const float norm = ((float) msg.getPitchWheelValue() - 8192.0f) / 8192.0f;
+        voices.setPitchBendSemi (norm * (float) (int) pBendRange->load());
     }
     else if (msg.isAllNotesOff() || msg.isAllSoundOff())
     {
-        voice.stop();
-        currentNote = -1;
+        voices.allNotesOff();
     }
 }
 

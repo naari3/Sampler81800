@@ -8,7 +8,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "core/SampleBuffer.h"
-#include "core/Voice.h"
+#include "core/VoiceManager.h"
 
 namespace otomad { }
 
@@ -76,8 +76,7 @@ private:
     juce::AudioFormatManager formatManager;
     juce::ThreadPool         loadPool { 1 };
 
-    otomad::Voice voice;         // Phase 1 はモノフォニック
-    int  currentNote = -1;
+    otomad::VoiceManager voices;
 
     std::atomic<double> hostSampleRate { 44100.0 };
 
@@ -101,6 +100,14 @@ private:
     std::atomic<float>* pSampleEnd   = nullptr;
     std::atomic<float>* pSnap        = nullptr;
     std::atomic<float>* pGain        = nullptr;
+    std::atomic<float>* pPortaMode   = nullptr;
+    std::atomic<float>* pPortaShape  = nullptr;
+    std::atomic<float>* pPortaTime   = nullptr;
+    std::atomic<float>* pPortaCurve  = nullptr;
+    std::atomic<float>* pGlideGroup  = nullptr;
+    std::atomic<float>* pPolyMode    = nullptr;
+    std::atomic<float>* pMaxVoices   = nullptr;
+    std::atomic<float>* pBendRange   = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };
