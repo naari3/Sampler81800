@@ -1,16 +1,24 @@
 #pragma once
 
-#include <array>
+#include <atomic>
+#include <memory>
+#include <vector>
+
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_audio_utils/juce_audio_utils.h>
+
+#include "core/SampleBuffer.h"
+#include "core/Voice.h"
+
+namespace otomad { }
 
 //==============================================================================
 /**
-    OtoMadSampler — Phase 0 の土台。
+    OtoMadSampler — Phase 1（最小の音MADサンプラー）。
 
-    この時点の実体は「MIDIノート→サイン波」の暫定シンセにすぎない。
-    重要なのは中身ではなく **§2.2 の MIDIサブブロック分割の器を最初から入れておく**こと。
-    Phase 1 以降で SampleBuffer / SourceReader / Voice / IPitchEngine に置き換えても、
-    processBlock の分割構造はそのまま残す（後から入れると全体に波及するため）。
+    D&D読み込み → 原音保持＋ホストSR変換、SourceReader(トリム/ゼロクロス吸着)、
+    VarispeedEngine(Linear/Hermite)、pitch/rootKey/ADSR、モノフォニック。
+    §2.2 の MIDIサブブロック分割は Phase 0 から維持。
 */
 class OtoMadSamplerProcessor : public juce::AudioProcessor
 {
@@ -43,30 +51,56 @@ public:
     void changeProgramName (int, const juce::String&) override {}
 
     //==========================================================================
-    void getStateInformation (juce::MemoryBlock&) override {}
-    void setStateInformation (const void*, int) override {}
+    void getStateInformation (juce::MemoryBlock&) override;
+    void setStateInformation (const void*, int) override;
+
+    //==========================================================================
+    // GUI 用アクセサ
+    juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
+    juce::MidiKeyboardState& getKeyboardState() noexcept    { return keyboardState; }
+    const otomad::SampleBuffer* getActiveSample() const noexcept { return activeSample.load(); }
+    int  getSampleVersion() const noexcept { return sampleVersion.load(); }
+
+    // メッセージスレッドから呼ぶ。バックグラウンドで読み込み、完了後にアトミック公開。
+    void loadSampleFromFile (const juce::File& file);
 
 private:
     //==========================================================================
-    // §2.2 : MIDIイベント位置でブロックを分割し、区間ごとに全ボイスをレンダリングする。
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
     void handleMidiMessage (const juce::MidiMessage& msg) noexcept;
+    void updateVoiceParams() noexcept;
 
-    // Phase 0 の暫定サイン波ボイス。Phase 1 以降で core/Voice に置き換わる。
-    struct SineVoice
-    {
-        int    note     = -1;    // -1 = 非アクティブ
-        double phase    = 0.0;   // [0, 2π)
-        double phaseInc = 0.0;
-        float  level    = 0.0f;  // 現在ゲイン（簡易フェードでクリック低減）
-        float  target   = 0.0f;  // 目標ゲイン
-    };
+    juce::AudioProcessorValueTreeState apvts;
+    juce::MidiKeyboardState            keyboardState;
 
-    static constexpr int kNumVoices = 16;
-    std::array<SineVoice, kNumVoices> voices;
+    juce::AudioFormatManager formatManager;
+    juce::ThreadPool         loadPool { 1 };
 
-    double currentSampleRate = 44100.0;
-    float  fadePerSample     = 0.0f;   // 1サンプルあたりのゲイン変化量（5ms フェード）
+    otomad::Voice voice;         // Phase 1 はモノフォニック
+    int  currentNote = -1;
+
+    std::atomic<double> hostSampleRate { 44100.0 };
+
+    // ロックフリー・サンプルスロット。旧バッファは Phase 1 では graveyard で寿命を延ばす
+    // （メッセージスレッド専用。Phase 5 で GCスレッド化する）。
+    std::atomic<const otomad::SampleBuffer*> activeSample { nullptr };
+    std::atomic<int> sampleVersion { 0 };
+    std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleGraveyard;
+    juce::CriticalSection graveyardLock;
+
+    // RTアクセス用にキャッシュしたパラメータ atomic
+    std::atomic<float>* pPitchSemi   = nullptr;
+    std::atomic<float>* pPitchCents  = nullptr;
+    std::atomic<float>* pRootKey     = nullptr;
+    std::atomic<float>* pInterp      = nullptr;
+    std::atomic<float>* pAttack      = nullptr;
+    std::atomic<float>* pDecay       = nullptr;
+    std::atomic<float>* pSustain     = nullptr;
+    std::atomic<float>* pRelease     = nullptr;
+    std::atomic<float>* pSampleStart = nullptr;
+    std::atomic<float>* pSampleEnd   = nullptr;
+    std::atomic<float>* pSnap        = nullptr;
+    std::atomic<float>* pGain        = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };

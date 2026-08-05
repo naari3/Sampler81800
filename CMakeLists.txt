@@ -40,7 +40,15 @@ juce_add_plugin(OtoMadSampler
 
 target_sources(OtoMadSampler PRIVATE
     src/PluginProcessor.cpp
-    src/PluginEditor.cpp)
+    src/PluginEditor.cpp
+    src/core/SampleLoader.cpp
+    src/core/SourceReader.cpp
+    src/core/Voice.cpp
+    src/pitch/VarispeedEngine.cpp
+    src/gui/DropZone.cpp
+    src/gui/WaveformView.cpp)
+
+target_include_directories(OtoMadSampler PRIVATE src)
 
 target_compile_features(OtoMadSampler PRIVATE cxx_std_20)
 
