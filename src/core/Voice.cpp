@@ -124,6 +124,7 @@ void Voice::startNote (const Pending& p) noexcept
     varispeed.reset();
     wsola.reset();
     phaseVocoder.reset();
+    reaper.reset();
     for (auto& d : delayRing) std::fill (d.begin(), d.end(), 0.0f);
 
     if (p.glide) porta.startGlide (p.originNote, (float) p.note);

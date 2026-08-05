@@ -111,26 +111,17 @@ void ReaperPitchShiftEngine::process (SourceReader& src, double& srcPos,
     if (tempo != lastTempo) { ps->set_tempo (tempo); lastTempo = tempo; }
 
     const int srcCh = std::max (1, src.getNumChannels());
-    int produced = 0;
-    int guard = 0;
-    // レイテンシの大きいモード(élastique 等)を1ブロックで充填できるよう十分大きく取る。
-    const int guardMax = (n + 65536) / 64 + 64;
 
-    while (produced < n && guard++ < guardMax)
+    // このブロックで消費すべき入力量（= n × tempo）だけを供給する。
+    // 「n出力できるまで供給し続ける」と大レイテンシ時に srcPos が暴走して周期的な無音を生む。
+    int toFeed = (int) std::llround ((double) n * tempo);
+    if (toFeed < 1)
+        toFeed = 1;
+
+    int fed = 0;
+    while (fed < toFeed)
     {
-        // 1) まず取り出せるだけ取り出す（FlushSamples はストリーム途中では呼ばない）
-        const int got = ps->GetSamples (n - produced, pullScratch.data());
-        if (got > 0)
-        {
-            for (int i = 0; i < got && produced + i < n; ++i)
-                for (int ch = 0; ch < nch; ++ch)
-                    out[ch][produced + i] = (float) pullScratch[(std::size_t) (i * numCh + ch)];
-            produced += got;
-            continue;
-        }
-
-        // 2) 足りない → 入力を供給（レイテンシ充填はここで素直に進む）
-        const int chunk = 128;
+        const int chunk = std::min (toFeed - fed, 512);
         ReaSample* buf = ps->GetBuffer (chunk);
         if (buf == nullptr)
             break;
@@ -139,12 +130,21 @@ void ReaperPitchShiftEngine::process (SourceReader& src, double& srcPos,
             const long idx = (long) std::floor (srcPos);
             for (int ch = 0; ch < numCh; ++ch)
                 buf[(std::size_t) (i * numCh + ch)] = (ReaSample) src.sampleAt (std::min (ch, srcCh - 1), idx);
-            srcPos += timeRatio;   // 長さ保持系: 入力消費は timeRatio
+            srcPos += 1.0;   // 入力1フレーム = ソース1サンプル
         }
         ps->BufferDone (chunk);
+        fed += chunk;
     }
 
-    // 埋まらなかった残りは無音
+    // 出せるだけ取り出す。レイテンシ期間は n に満たない → 残りは無音（ホストが PDC 補償）。
+    int produced = ps->GetSamples (n, pullScratch.data());
+    if (produced > n) produced = n;
+    if (produced < 0) produced = 0;
+
+    for (int i = 0; i < produced; ++i)
+        for (int ch = 0; ch < nch; ++ch)
+            out[ch][i] = (float) pullScratch[(std::size_t) (i * numCh + ch)];
+
     for (int ch = 0; ch < numChannels; ++ch)
         for (int i = produced; i < n; ++i)
             out[ch][i] = 0.0f;
