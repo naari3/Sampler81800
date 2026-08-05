@@ -41,6 +41,7 @@ void PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
     curFormant = fq; curTimeRatio = tq;
+    ++curGen;   // 設定が変わった → 進行中のレンダリングは無効化される
 }
 
 bool PitchCache::renderPending()
@@ -61,11 +62,11 @@ bool PitchCache::renderPending()
     if (! found)
         return false;
 
-    int usedVersion = -1;
-    if (auto buf = renderShift (semi, usedVersion))
+    int usedGen = -1;
+    if (auto buf = renderShift (semi, usedGen))
     {
         std::lock_guard<std::mutex> lock (ownerLock);
-        if (usedVersion == curVersion)   // レンダリング中に素材/モードが変わっていなければ公開
+        if (usedGen == curGen)   // レンダリング中に設定(素材/モード/フォルマント/ストレッチ)が変わっていなければ公開
         {
             graveyard.push_back (buf);
             ready[(std::size_t) (semi - kMin)].store (buf.get(), std::memory_order_release);
@@ -74,15 +75,15 @@ bool PitchCache::renderPending()
     return true;
 }
 
-std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedVersion)
+std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
 {
-    // 素材/モードのスナップショット
+    // 設定のスナップショット
     const SampleBuffer* src; int mode, sub; double sr; float formant; double timeRatio;
     {
         std::lock_guard<std::mutex> lock (ownerLock);
         src = curSrc; mode = curMode; sub = curSub; sr = curSr;
         formant = curFormant; timeRatio = curTimeRatio;
-        usedVersion = curVersion;
+        usedGen = curGen;
     }
     if (api == nullptr || src == nullptr || src->numSamples <= 0)
         return nullptr;

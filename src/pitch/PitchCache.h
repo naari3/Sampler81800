@@ -60,7 +60,7 @@ public:
     bool renderPending();
 
 private:
-    std::shared_ptr<SampleBuffer> renderShift (int semi, int& usedVersion);
+    std::shared_ptr<SampleBuffer> renderShift (int semi, int& usedGen);
 
     host::ReaperApi* api = nullptr;
 
@@ -73,6 +73,7 @@ private:
     double curSr = 48000.0;
     float  curFormant = 0.0f;      // 量子化済み（0.25半音刻み）
     double curTimeRatio = 1.0;     // 量子化済み（0.01刻み）
+    int    curGen = 0;             // 設定が1つでも変わるたびに +1（レンダリング有効性の判定用）
     std::vector<std::shared_ptr<const SampleBuffer>> graveyard;   // 再生中バッファの寿命保持
 };
 
