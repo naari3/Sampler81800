@@ -141,6 +141,9 @@ D&Dでサンプルを読み込み、ピッチオフセット・ポルタメン�
 - **オーディオスレッドで禁止**: `new` / `delete` / `malloc` / ロック / ファイルI/O / ログ出力 / `std::string`操作。
 - サンプル差し替えは `std::shared_ptr<const SampleBuffer>` を
   **バックグラウンドで構築 → アトミック交換 → 旧データはGCスレッドで解放**。
+  （**Phase 1 実装は簡素化**: 旧バッファはメッセージスレッド側の graveyard に積んで
+  プラグイン生存中は保持する。RT安全は満たすが差し替えを繰り返すとメモリが積むため、
+  **Phase 5 で GCスレッド化**して古いものから解放する。）
 - **エンジンの実体はボイスごとに持つ。** 位相ボコーダの位相アキュムレータ、WSOLAの合成テンプレート、
   OLAオーバーラップバッファ、出力FIFO は**ボイス固有の持続状態**であり、共有できない。
   各 `Voice` が全エンジン型のインスタンスを1つずつ保持し、`prepareToPlay` で最大サイズ分を
@@ -248,14 +251,21 @@ otomad-sampler/
 
 ```cpp
 struct SampleBuffer {
-    juce::AudioBuffer<float> original;   // 原音SRのままの生データ（保存・再変換の元）
-    juce::AudioBuffer<float> data;       // 再生用。常にホストSRへ変換済み
-    double  originalSampleRate = 0;
-    double  sampleRate         = 0;      // = ホストSR (dataのSR)
-    juce::String name;
-    std::vector<std::pair<float,float>> peaks;   // GUI表示用ピーク列（data基準）
+    std::vector<std::vector<float>> data;      // 再生用。常にホストSRへ変換済み（planar [ch][sample]）
+    int          numChannels = 0;
+    std::int64_t numSamples  = 0;
+    double       sampleRate  = 0.0;            // = ホストSR (dataのSR)
+    std::vector<std::vector<float>> original;  // 原音SRのままの生データ（保存・再変換の元）
+    double       originalSampleRate = 0.0;
+    std::string  name;
+    std::vector<std::pair<float,float>> peaks; // GUI表示用ピーク列（data基準, モノミックス）
 };
 ```
+
+> **【v5→実装】格納は `std::vector`（planar）で確定。** 設計初版は `juce::AudioBuffer<float>` を
+> 挙げていたが、DSPコア（`SourceReader` / `VarispeedEngine` / `Interpolators`）を **JUCE非依存**にして
+> 単体テスト可能にするため planar な `std::vector` に変更した（連続領域なので RT読み出しは安全）。
+> ファイル読み込み（`SampleLoader`）だけが JUCE に依存し、デコード結果をここへコピーする。
 
 再生用 `data` はホストSRへリサンプル済みにしておくと、後段のratio計算が `2^(semitone/12)`
 だけで済む。原音SRのまま扱うと `ratio *= originalSR / hostSR` が全エンジンに漏れ出すので避ける。
