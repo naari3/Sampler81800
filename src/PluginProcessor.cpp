@@ -3,6 +3,7 @@
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
+#include <algorithm>
 #include <cmath>
 
 using otomad::SampleBuffer;
@@ -69,7 +70,7 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     vp.pitchSemi  = pPitchSemi->load();
     vp.pitchCents = pPitchCents->load();
     vp.rootKey    = (int) pRootKey->load();
-    vp.gainLin    = juce::Decibels::decibelsToGain (pGain->load());
+    vp.gainLin    = juce::Decibels::decibelsToGain (pGain->load()) * normGain.load();
     vp.quality    = ((int) pInterp->load() == 0) ? otomad::VarispeedEngine::Quality::Linear
                                                  : otomad::VarispeedEngine::Quality::Hermite;
     voices.setVoiceParams (vp);
@@ -192,8 +193,24 @@ void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
             sampleGraveyard.push_back (sb);
         }
         activeSample.store (sb.get());
+        normGain.store (1.0f);          // 新規読み込みでノーマライズをリセット
         sampleVersion.fetch_add (1);
     });
+}
+
+void OtoMadSamplerProcessor::normalizeSample()
+{
+    const auto* sb = activeSample.load();
+    if (sb == nullptr || sb->numChannels <= 0)
+        return;
+
+    float peak = 0.0f;
+    for (int ch = 0; ch < sb->numChannels; ++ch)
+        for (float v : sb->data[(std::size_t) ch])
+            peak = std::max (peak, std::abs (v));
+
+    normGain.store (peak > 1.0e-6f ? std::min (0.99f / peak, 64.0f) : 1.0f);
+    sampleVersion.fetch_add (1);   // 波形表示を更新させる
 }
 
 //==============================================================================

@@ -44,6 +44,8 @@ private:
     int    latency = 0;
     double sampleRate = 48000.0;
     int    numCh = 2;
+    double lastShift = -1.0;
+    double lastTempo = -1.0;
 
     std::vector<double> pullScratch;   // GetSamples 出力（interleaved double）
 };

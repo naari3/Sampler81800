@@ -84,6 +84,8 @@ void ReaperPitchShiftEngine::prepare (const PitchEngineContext& ctx, EngineResou
 
 void ReaperPitchShiftEngine::reset()
 {
+    lastShift = -1.0;
+    lastTempo = -1.0;
     if (pitchShift != nullptr)
         static_cast<IReaperPitchShift*> (pitchShift)->Reset();
 }
@@ -102,49 +104,44 @@ void ReaperPitchShiftEngine::process (SourceReader& src, double& srcPos,
     }
 
     auto* ps = static_cast<IReaperPitchShift*> (pitchShift);
-    ps->set_shift ((double) pitchRatio[0]);            // ブロック単位（サンプル精度でない, §5.4）
-    ps->set_tempo (timeRatio > 0.0 ? timeRatio : 1.0);
+    // パラメータは変化時のみ設定（毎ブロック set するとモードによりグリッチしうる）
+    const double shift = (double) pitchRatio[0];        // ブロック単位（サンプル精度でない, §5.4）
+    const double tempo = timeRatio > 0.0 ? timeRatio : 1.0;
+    if (shift != lastShift) { ps->set_shift (shift); lastShift = shift; }
+    if (tempo != lastTempo) { ps->set_tempo (tempo); lastTempo = tempo; }
 
     const int srcCh = std::max (1, src.getNumChannels());
     int produced = 0;
     int guard = 0;
-    const int guardMax = (n / 64 + 8) * 8;
+    // レイテンシの大きいモード(élastique 等)を1ブロックで充填できるよう十分大きく取る。
+    const int guardMax = (n + 65536) / 64 + 64;
 
     while (produced < n && guard++ < guardMax)
     {
-        const int want  = n - produced;
-        const int chunk = std::min (want, 256);
-
-        if (ReaSample* buf = ps->GetBuffer (chunk))
+        // 1) まず取り出せるだけ取り出す（FlushSamples はストリーム途中では呼ばない）
+        const int got = ps->GetSamples (n - produced, pullScratch.data());
+        if (got > 0)
         {
-            for (int i = 0; i < chunk; ++i)
-            {
-                const long idx = (long) std::floor (srcPos);
-                for (int ch = 0; ch < numCh; ++ch)
-                    buf[(std::size_t) (i * numCh + ch)] = (ReaSample) src.sampleAt (std::min (ch, srcCh - 1), idx);
-                srcPos += timeRatio;   // 長さ保持系: 入力消費は timeRatio
-            }
-            ps->BufferDone (chunk);
-        }
-
-        const int got = ps->GetSamples (want, pullScratch.data());
-        if (got <= 0)
-        {
-            ps->FlushSamples();
-            const int flushed = ps->GetSamples (want, pullScratch.data());
-            if (flushed <= 0)
-                break;   // これ以上出ない
-            for (int i = 0; i < flushed; ++i)
+            for (int i = 0; i < got && produced + i < n; ++i)
                 for (int ch = 0; ch < nch; ++ch)
                     out[ch][produced + i] = (float) pullScratch[(std::size_t) (i * numCh + ch)];
-            produced += flushed;
+            produced += got;
             continue;
         }
 
-        for (int i = 0; i < got && produced + i < n; ++i)
-            for (int ch = 0; ch < nch; ++ch)
-                out[ch][produced + i] = (float) pullScratch[(std::size_t) (i * numCh + ch)];
-        produced += got;
+        // 2) 足りない → 入力を供給（レイテンシ充填はここで素直に進む）
+        const int chunk = 128;
+        ReaSample* buf = ps->GetBuffer (chunk);
+        if (buf == nullptr)
+            break;
+        for (int i = 0; i < chunk; ++i)
+        {
+            const long idx = (long) std::floor (srcPos);
+            for (int ch = 0; ch < numCh; ++ch)
+                buf[(std::size_t) (i * numCh + ch)] = (ReaSample) src.sampleAt (std::min (ch, srcCh - 1), idx);
+            srcPos += timeRatio;   // 長さ保持系: 入力消費は timeRatio
+        }
+        ps->BufferDone (chunk);
     }
 
     // 埋まらなかった残りは無音

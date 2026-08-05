@@ -14,6 +14,12 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     addAndMakeVisible (keyboard);
     addAndMakeVisible (curveDisplay);
 
+    // 画面キーボードは固定ベロシティ（クリック位置依存で小さくなるのを防ぐ）
+    keyboard.setVelocity (0.9f, false);
+
+    addAndMakeVisible (normalizeButton);
+    normalizeButton.onClick = [this] { processor.normalizeSample(); };
+
     const auto rotary = juce::Slider::RotaryHorizontalVerticalDrag;
     const auto linear = juce::Slider::LinearHorizontal;
 
@@ -137,6 +143,7 @@ void OtoMadSamplerEditor::resized()
     dropZone.setBounds (waveArea);
 
     auto trimRow = r.removeFromTop (40).reduced (8, 4);
+    normalizeButton.setBounds (trimRow.removeFromRight (92).reduced (2, 4));
     kStart->label.setBounds (trimRow.removeFromLeft (44));
     kStart->slider.setBounds (trimRow.removeFromLeft (trimRow.getWidth() / 2 - 4).withTrimmedRight (4));
     kEnd->label.setBounds (trimRow.removeFromLeft (40));

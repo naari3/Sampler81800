@@ -1,8 +1,13 @@
 #include "DropZone.h"
 #include "PluginProcessor.h"
+#include "core/Params.h"
+
+#include <cmath>
 
 namespace otomad::gui
 {
+
+namespace P = otomad::params;
 
 DropZone::DropZone (OtoMadSamplerProcessor& p) : processor (p)
 {
@@ -34,12 +39,76 @@ void DropZone::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (15.0f));
         g.drawText (juce::CharPointer_UTF8 ("\xe3\x83\x89\xe3\x83\xad\xe3\x83\x83\xe3\x83\x97 or \xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x83\xe3\x82\xaf\xe3\x81\xa7\xe9\x81\xb8\xe6\x8a\x9e"),
                     getLocalBounds(), juce::Justification::centred, false);
+        return;
+    }
+
+    // トリムハンドルのグリップ（上端の三角）を描いてドラッグ可能なことを示す
+    const float w = (float) getWidth();
+    const float s = processor.getAPVTS().getRawParameterValue (P::sampleStart)->load();
+    const float e = processor.getAPVTS().getRawParameterValue (P::sampleEnd)->load();
+    g.setColour (juce::Colours::orange);
+    for (float x01 : { s, e })
+    {
+        const float x = x01 * w;
+        juce::Path tri;
+        tri.addTriangle (x - 5.0f, 0.0f, x + 5.0f, 0.0f, x, 8.0f);
+        g.fillPath (tri);
     }
 }
 
-void DropZone::mouseDown (const juce::MouseEvent&)
+juce::RangedAudioParameter* DropZone::handleParam (Handle h) const
 {
-    chooseFile();
+    return processor.getAPVTS().getParameter (h == Handle::Start ? P::sampleStart : P::sampleEnd);
+}
+
+DropZone::Handle DropZone::beginDrag (float x01)
+{
+    const float s = processor.getAPVTS().getRawParameterValue (P::sampleStart)->load();
+    const float e = processor.getAPVTS().getRawParameterValue (P::sampleEnd)->load();
+    return (std::abs (x01 - s) <= std::abs (x01 - e)) ? Handle::Start : Handle::End;
+}
+
+void DropZone::updateDrag (float x01)
+{
+    x01 = juce::jlimit (0.0f, 1.0f, x01);
+    const float s = processor.getAPVTS().getRawParameterValue (P::sampleStart)->load();
+    const float e = processor.getAPVTS().getRawParameterValue (P::sampleEnd)->load();
+    if (drag == Handle::Start) x01 = juce::jmin (x01, e - 0.001f);
+    else                       x01 = juce::jmax (x01, s + 0.001f);
+
+    if (auto* p = handleParam (drag))
+        p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, x01));   // レンジ [0,1] なので正規化値=値
+}
+
+void DropZone::mouseDown (const juce::MouseEvent& e)
+{
+    if (processor.getActiveSample() == nullptr)
+    {
+        chooseFile();     // 未読み込み時のみエクスプローラを開く
+        return;
+    }
+    const float x01 = (float) e.position.x / (float) juce::jmax (1, getWidth());
+    drag = beginDrag (x01);
+    if (auto* p = handleParam (drag))
+        p->beginChangeGesture();
+    updateDrag (x01);
+}
+
+void DropZone::mouseDrag (const juce::MouseEvent& e)
+{
+    if (drag == Handle::None)
+        return;
+    updateDrag ((float) e.position.x / (float) juce::jmax (1, getWidth()));
+}
+
+void DropZone::mouseUp (const juce::MouseEvent&)
+{
+    if (drag != Handle::None)
+    {
+        if (auto* p = handleParam (drag))
+            p->endChangeGesture();
+        drag = Handle::None;
+    }
 }
 
 void DropZone::chooseFile()

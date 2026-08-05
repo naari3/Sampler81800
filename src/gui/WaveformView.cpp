@@ -17,12 +17,9 @@ WaveformView::~WaveformView()
 
 void WaveformView::timerCallback()
 {
-    const int v = processor.getSampleVersion();
-    if (v != lastSampleVersion)
-    {
-        lastSampleVersion = v;
-        repaint();
-    }
+    // トリムのドラッグやノーマライズに追従させるため毎tick再描画（小さいので軽い）
+    lastSampleVersion = processor.getSampleVersion();
+    repaint();
 }
 
 void WaveformView::paint (juce::Graphics& g)
@@ -51,16 +48,16 @@ void WaveformView::paint (juce::Graphics& g)
     g.fillRect (juce::Rectangle<float> (bounds.getX() + s01 * w, bounds.getY(),
                                         (e01 - s01) * w, bounds.getHeight()));
 
-    // 波形
+    // 波形（ノーマライズ倍率を反映）
+    const float ng = processor.getNormGain();
     g.setColour (juce::Colour (0xff5cc8ff));
     const int npx = (int) w;
-    juce::Path path;
     for (int x = 0; x < npx; ++x)
     {
         const std::size_t idx = (std::size_t) ((double) x / (double) juce::jmax (1, npx) * (double) peaks.size());
         const auto& mm = peaks[juce::jmin (idx, peaks.size() - 1)];
-        const float y1 = midY - mm.second * halfH;
-        const float y2 = midY - mm.first  * halfH;
+        const float y1 = midY - juce::jlimit (-1.0f, 1.0f, mm.second * ng) * halfH;
+        const float y2 = midY - juce::jlimit (-1.0f, 1.0f, mm.first  * ng) * halfH;
         g.drawVerticalLine (juce::roundToInt (bounds.getX() + (float) x), y1, y2);
     }
 

@@ -20,6 +20,8 @@ public:
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp   (const juce::MouseEvent&) override;
 
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void fileDragEnter (const juce::StringArray&, int, int) override;
@@ -30,8 +32,14 @@ private:
     static bool isSupported (const juce::String& path);
     void chooseFile();
 
+    enum class Handle { None, Start, End };
+    Handle beginDrag (float x01);
+    void   updateDrag (float x01);
+    juce::RangedAudioParameter* handleParam (Handle) const;
+
     OtoMadSamplerProcessor& processor;
     bool dragHighlight = false;
+    Handle drag = Handle::None;
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DropZone)

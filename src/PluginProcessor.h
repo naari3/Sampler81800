@@ -69,6 +69,11 @@ public:
     bool isEngineFallbackActive() const noexcept { return voices.isFallbackActive(); }
     bool isReaperAvailable() const noexcept { return reaperApi.isAvailable(); }
 
+    // ノーマライズ: 現在のサンプルのピークから正規化ゲインを算出（メッセージスレッド）。
+    void  normalizeSample();
+    void  resetNormalize() noexcept { normGain.store (1.0f); }
+    float getNormGain() const noexcept { return normGain.load(); }
+
     // メッセージスレッドから呼ぶ。バックグラウンドで読み込み、完了後にアトミック公開。
     void loadSampleFromFile (const juce::File& file);
 
@@ -92,7 +97,8 @@ private:
     // ロックフリー・サンプルスロット。旧バッファは Phase 1 では graveyard で寿命を延ばす
     // （メッセージスレッド専用。Phase 5 で GCスレッド化する）。
     std::atomic<const otomad::SampleBuffer*> activeSample { nullptr };
-    std::atomic<int> sampleVersion { 0 };
+    std::atomic<int>   sampleVersion { 0 };
+    std::atomic<float> normGain { 1.0f };   // ノーマライズ倍率（gain とは別に掛かる）
     std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleGraveyard;
     juce::CriticalSection graveyardLock;
 
