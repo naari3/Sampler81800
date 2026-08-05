@@ -108,6 +108,14 @@ private:
     std::atomic<float>* pPolyMode    = nullptr;
     std::atomic<float>* pMaxVoices   = nullptr;
     std::atomic<float>* pBendRange   = nullptr;
+    std::atomic<float>* pAlgorithm   = nullptr;
+    std::atomic<float>* pDurationMode = nullptr;
+    std::atomic<float>* pSyncLength  = nullptr;
+    std::atomic<float>* pStretch     = nullptr;
+    std::atomic<float>* pFormant     = nullptr;
+
+    double hostBpm = 120.0;
+    bool   hostBpmValid = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };

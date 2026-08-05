@@ -29,7 +29,7 @@ std::vector<float> renderConstRatio (VarispeedEngine::Quality q,
     float* ptrs[1] = { out.data() };
 
     double srcPos = 0.0;
-    engine.process (reader, srcPos, ptrs, 1, n, ratioBuf.data());
+    engine.process (reader, srcPos, ptrs, 1, n, ratioBuf.data(), 1.0);   // timeRatio 無視
     return out;
 }
 } // namespace

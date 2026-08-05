@@ -32,19 +32,44 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kGroup = &addKnob (P::glideGroupMs,"Group", rotary);
     kMaxV  = &addKnob (P::maxVoices,   "Voices",rotary);
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
+    kStretch = &addKnob (P::stretchAmount, "Stretch", rotary);
+    kFormant = &addKnob (P::formant,       "Formnt",  rotary);
 
     cInterp = &addCombo (P::interpQuality, "Interp", { "Linear", "Hermite" });
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
     cPShape = &addCombo (P::portaShape,    "Shape",  { "Time", "Analog" });
     cPoly   = &addCombo (P::polyMode,      "Poly",   { "Mono", "Poly" });
+    cAlgo   = &addCombo (P::algorithm,     "Algo",
+                         { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" });
+    cDur    = &addCombo (P::durationMode,  "Duration", { "Natural", "Sync", "Manual" });
+    cSync   = &addCombo (P::syncLength,    "Sync",   { "1/4", "1/2", "1", "2", "4" });
 
     addAndMakeVisible (snapButton);
     snapAttach = std::make_unique<ButtonAttach> (processor.getAPVTS(), P::snapZeroCross, snapButton);
 
-    setSize (760, 560);
+    statusLabel.setJustificationType (juce::Justification::centredLeft);
+    statusLabel.setColour (juce::Label::textColourId, juce::Colours::orange);
+    addAndMakeVisible (statusLabel);
+
+    startTimerHz (8);
+    setSize (860, 620);
 }
 
-OtoMadSamplerEditor::~OtoMadSamplerEditor() = default;
+OtoMadSamplerEditor::~OtoMadSamplerEditor() { stopTimer(); }
+
+void OtoMadSamplerEditor::timerCallback()
+{
+    auto& apvts = processor.getAPVTS();
+    const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
+    const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();
+
+    juce::String msg;
+    if (algo >= 3 && algo <= 5)   // Granular/StretchLib/REAPER 未実装 → 代替再生 (規約3)
+        msg = juce::CharPointer_UTF8 ("\xe2\x9a\xa0 \xe6\x9c\xaa\xe5\xae\x9f\xe8\xa3\x85\xe2\x86\x92 Phase Vocoder \xe3\x81\xa7\xe4\xbb\xa3\xe6\x9b\xbf\xe5\x86\x8d\xe7\x94\x9f\xe4\xb8\xad");
+    else if (algo == 0 && dur != 0)   // Varispeed は長さが音程に従属 (§6.3)
+        msg = juce::CharPointer_UTF8 ("Varispeed \xe3\x81\xa7\xe3\x81\xaf\xe9\x95\xb7\xe3\x81\x95\xe3\x81\x8c\xe9\x9f\xb3\xe7\xa8\x8b\xe3\x81\xab\xe5\xbe\x93\xe5\xb1\x9e\xef\xbc\x88Natural \xe6\x89\xb1\xe3\x81\x84\xef\xbc\x89");
+    statusLabel.setText (msg, juce::dontSendNotification);
+}
 
 OtoMadSamplerEditor::Knob& OtoMadSamplerEditor::addKnob (const juce::String& paramID,
                                                          const juce::String& text,
@@ -105,47 +130,49 @@ void OtoMadSamplerEditor::resized()
     auto r = getLocalBounds();
     r.removeFromTop (28);
 
-    auto waveArea = r.removeFromTop (130).reduced (8, 4);
+    auto waveArea = r.removeFromTop (124).reduced (8, 4);
     waveform.setBounds (waveArea);
     dropZone.setBounds (waveArea);
 
-    auto trimRow = r.removeFromTop (44).reduced (8, 4);
+    auto trimRow = r.removeFromTop (40).reduced (8, 4);
     kStart->label.setBounds (trimRow.removeFromLeft (44));
     kStart->slider.setBounds (trimRow.removeFromLeft (trimRow.getWidth() / 2 - 4).withTrimmedRight (4));
     kEnd->label.setBounds (trimRow.removeFromLeft (40));
     kEnd->slider.setBounds (trimRow);
 
-    keyboard.setBounds (r.removeFromBottom (70).reduced (8, 4));
+    keyboard.setBounds (r.removeFromBottom (68).reduced (8, 4));
+    statusLabel.setBounds (r.removeFromBottom (22).reduced (10, 0));
 
     auto grid = r.reduced (8, 4);
-    const int rowH = grid.getHeight() / 3;
+    const int rowH = grid.getHeight() / 4;
+    auto rowRect = [&] { return grid.removeFromTop (rowH); };
+    auto cell = [] (juce::Rectangle<int>& row, int cols) { return row.removeFromLeft (row.getWidth() / cols).reduced (4); };
 
-    // row1: Semi Cent Root Gain + Interp
+    // row1: Semi Cent Root Gain [Interp] Snap
     {
-        auto row = grid.removeFromTop (rowH);
-        const int w = row.getWidth() / 5;
-        for (auto* k : { kSemi, kCents, kRoot, kGain })
-            place (k, row.removeFromLeft (w).reduced (4));
-        placeCombo (cInterp, row.reduced (4));
+        auto row = rowRect(); int c = 6;
+        place (kSemi, cell (row, c)); place (kCents, cell (row, c - 1));
+        place (kRoot, cell (row, c - 2)); place (kGain, cell (row, c - 3));
+        placeCombo (cInterp, cell (row, c - 4));
+        snapButton.setBounds (row.reduced (4).withTrimmedTop (16));
     }
-    // row2: A D S R + Snap
+    // row2: A D S R Voices Bend
     {
-        auto row = grid.removeFromTop (rowH);
-        const int w = row.getWidth() / 5;
-        for (auto* k : { kAtk, kDec, kSus, kRel })
-            place (k, row.removeFromLeft (w).reduced (4));
-        snapButton.setBounds (row.reduced (6).withTrimmedTop (16));
+        auto row = rowRect(); int c = 6;
+        for (auto* k : { kAtk, kDec, kSus, kRel, kMaxV, kBend })
+            place (k, row.removeFromLeft (row.getWidth() / c-- ).reduced (4));
     }
-    // row3: Glide Curve Group Voices Bend + Porta/Shape/Poly + CurveDisplay
+    // row3: Glide Curve Group [Porta][Shape][Poly]
     {
-        auto row = grid;
-        const int w = row.getWidth() / 8;
-        for (auto* k : { kPTime, kPCurve, kGroup, kMaxV, kBend })
-            place (k, row.removeFromLeft (w).reduced (4));
-        placeCombo (cPMode,  row.removeFromLeft (w).reduced (4));
-        placeCombo (cPShape, row.removeFromLeft (w).reduced (4));
-        auto last = row;
-        placeCombo (cPoly, last.removeFromTop (44).reduced (4));
-        curveDisplay.setBounds (last.reduced (4));
+        auto row = rowRect(); int c = 6;
+        place (kPTime, cell (row, c)); place (kPCurve, cell (row, c - 1)); place (kGroup, cell (row, c - 2));
+        placeCombo (cPMode, cell (row, c - 3)); placeCombo (cPShape, cell (row, c - 4)); placeCombo (cPoly, cell (row, c - 5));
+    }
+    // row4: [Algo][Duration][Sync] Stretch Formant [CurveDisplay]
+    {
+        auto row = grid; int c = 6;
+        placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
+        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
+        curveDisplay.setBounds (row.reduced (4));
     }
 }

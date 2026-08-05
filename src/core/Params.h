@@ -28,6 +28,13 @@ inline constexpr const char* glideGroupMs  = "glideGroupMs";
 inline constexpr const char* polyMode      = "polyMode";
 inline constexpr const char* maxVoices     = "maxVoices";
 inline constexpr const char* bendRange     = "bendRange";
+// Phase 3
+inline constexpr const char* algorithm     = "algorithm";
+inline constexpr const char* durationMode  = "durationMode";
+inline constexpr const char* syncLength    = "syncLength";
+inline constexpr const char* stretchAmount = "stretchAmount";
+inline constexpr const char* formant       = "formant";
+inline constexpr const char* reaperSubMode = "reaperSubMode";
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -73,6 +80,19 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                         StringArray { "Mono", "Poly" }, 0));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { maxVoices, 1 }, "Max Voices", 1, 16, 8));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { bendRange, 1 }, "Bend Range", 0, 48, 2));
+
+    // Phase 3: アルゴリズム / 長さ制御 / フォルマント（規約10/12: 選択肢は6個で固定, 縮小しない）
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { algorithm, 1 }, "Algorithm",
+                    StringArray { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { durationMode, 1 }, "Duration",
+                    StringArray { "Natural", "Sync", "Manual" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { syncLength, 1 }, "Sync Length",
+                    StringArray { "1/4", "1/2", "1", "2", "4" }, 2));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { stretchAmount, 1 }, "Stretch",
+                    NormalisableRange<float> (0.25f, 4.0f, 0.01f, 0.5f), 1.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { formant, 1 }, "Formant",
+                    NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 31, 0));
 
     return layout;
 }

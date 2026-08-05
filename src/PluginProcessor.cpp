@@ -35,6 +35,11 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPolyMode    = apvts.getRawParameterValue (otomad::params::polyMode);
     pMaxVoices   = apvts.getRawParameterValue (otomad::params::maxVoices);
     pBendRange   = apvts.getRawParameterValue (otomad::params::bendRange);
+    pAlgorithm   = apvts.getRawParameterValue (otomad::params::algorithm);
+    pDurationMode = apvts.getRawParameterValue (otomad::params::durationMode);
+    pSyncLength  = apvts.getRawParameterValue (otomad::params::syncLength);
+    pStretch     = apvts.getRawParameterValue (otomad::params::stretchAmount);
+    pFormant     = apvts.getRawParameterValue (otomad::params::formant);
 }
 
 //==============================================================================
@@ -42,6 +47,7 @@ void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 {
     hostSampleRate.store (sampleRate);
     voices.prepare (sampleRate, samplesPerBlock, 2);
+    setLatencySamples (otomad::kFixedLatency);   // 固定レイテンシ (§5.5)
 }
 
 bool OtoMadSamplerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -77,6 +83,17 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
                           pPortaTime->load(), pPortaCurve->load(), pGlideGroup->load());
 
     voices.setPoly ((int) pPolyMode->load() == 1, (int) pMaxVoices->load());
+
+    otomad::Voice::EngineControl ec;
+    ec.algorithm    = (int) pAlgorithm->load();
+    ec.durationMode = (int) pDurationMode->load();
+    ec.stretchAmount = pStretch->load();
+    static constexpr float syncBeatsTable[] = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+    ec.syncBeats    = syncBeatsTable[juce::jlimit (0, 4, (int) pSyncLength->load())];
+    ec.hostBpm      = hostBpm;
+    ec.hostBpmValid = hostBpmValid;
+    ec.formantSemi  = pFormant->load();
+    voices.setEngineControl (ec);
 }
 
 void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
@@ -86,6 +103,16 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
+
+    // ホストテンポ（Sync 用, §4.7）
+    hostBpmValid = false;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (auto bpm = pos->getBpm())
+            {
+                hostBpm = *bpm;
+                hostBpmValid = true;
+            }
 
     // 画面上のキーボードからの入力を MIDI にマージ
     keyboardState.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), true);

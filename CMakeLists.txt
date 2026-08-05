@@ -48,6 +48,10 @@ target_sources(OtoMadSampler PRIVATE
     src/core/PortamentoGenerator.cpp
     src/core/GlideMatcher.cpp
     src/pitch/VarispeedEngine.cpp
+    src/pitch/WsolaEngine.cpp
+    src/pitch/PhaseVocoderEngine.cpp
+    src/pitch/EngineResources.cpp
+    src/pitch/dsp/Fft.cpp
     src/gui/DropZone.cpp
     src/gui/WaveformView.cpp)
 

@@ -1,0 +1,87 @@
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
+
+#include <cmath>
+#include <vector>
+
+#include "test_helpers.h"
+#include "test_engine_helpers.h"
+#include "pitch/PhaseVocoderEngine.h"
+
+using namespace otomad;
+using Catch::Approx;
+
+namespace
+{
+EngineResources makeRes () { EngineResources r; r.prepare (48000.0); return r; }
+const double tenCents = std::pow (2.0, 10.0 / 1200.0) - 1.0;
+}
+
+// (a) +7半音で F0 が期待値 ±10cent
+TEST_CASE ("PhaseVocoderEngine shifts +7 semitones within 10 cents", "[pv]")
+{
+    auto res = makeRes();
+    auto src = test::makeSine (440.0, 48000.0, 1.5);
+    PhaseVocoderEngine e;
+
+    const double ratio = std::pow (2.0, 7.0 / 12.0);
+    auto out = test::renderEngine (e, res, src, ratio, 1.0, 48000, 256);
+
+    const double f0 = test::estimateF0 (out.data() + 8000, 32000, 48000.0, 0.02f);
+    REQUIRE (f0 == Approx (440.0 * ratio).epsilon (tenCents));
+}
+
+// (b) Natural(timeRatio=1) で長さ保持
+TEST_CASE ("PhaseVocoderEngine preserves duration at timeRatio 1", "[pv]")
+{
+    auto res = makeRes();
+    auto src = test::makeSine (440.0, 48000.0, 1.0);
+    PhaseVocoderEngine e;
+
+    auto out = test::renderEngine (e, res, src, std::pow (2.0, 7.0 / 12.0), 1.0, 48000 + 8192, 256);
+    REQUIRE ((double) test::nonZeroExtent (out) == Approx (48000.0).epsilon (0.06));
+}
+
+// (c) timeRatio=0.5 で約2倍、pitchRatio=1 で F0 不変
+TEST_CASE ("PhaseVocoderEngine stretches to 2x at timeRatio 0.5", "[pv]")
+{
+    auto res = makeRes();
+    auto src = test::makeSine (440.0, 48000.0, 1.0);
+    PhaseVocoderEngine e;
+
+    auto out = test::renderEngine (e, res, src, 1.0, 0.5, 96000 + 8192, 256);
+    REQUIRE ((double) test::nonZeroExtent (out) == Approx (96000.0).epsilon (0.06));
+
+    const double f0 = test::estimateF0 (out.data() + 8000, 80000, 48000.0, 0.02f);
+    REQUIRE (f0 == Approx (440.0).epsilon (tenCents));
+}
+
+// (e) ブロック分割不変性
+TEST_CASE ("PhaseVocoderEngine output is independent of block size", "[pv]")
+{
+    auto res = makeRes();
+    auto src = test::makeSine (330.0, 48000.0, 0.5);
+    PhaseVocoderEngine e;
+
+    const double ratio = std::pow (2.0, 5.0 / 12.0);
+    auto a = test::renderEngine (e, res, src, ratio, 1.0, 8000, 256);
+    auto b = test::renderEngine (e, res, src, ratio, 1.0, 8000, 1);
+
+    float maxDiff = 0.0f;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        maxDiff = std::max (maxDiff, std::abs (a[i] - b[i]));
+    REQUIRE (maxDiff < 1.0e-3f);
+}
+
+// 無音入力で NaN/Inf を出さない
+TEST_CASE ("PhaseVocoderEngine is finite on silence", "[pv]")
+{
+    auto res = makeRes();
+    SampleBuffer sil;
+    sil.numChannels = 1; sil.numSamples = 24000; sil.sampleRate = 48000.0;
+    sil.data.assign (1, std::vector<float> (24000, 0.0f));
+
+    PhaseVocoderEngine e;
+    auto out = test::renderEngine (e, res, sil, std::pow (2.0, 7.0 / 12.0), 1.0, 24000, 256);
+    for (float v : out) REQUIRE (std::isfinite (v));
+}

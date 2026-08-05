@@ -8,8 +8,9 @@ namespace otomad
 void VoiceManager::prepare (double sr, int maxBlock, int numChannels)
 {
     sampleRate = sr;
+    resources.prepare (sr);
     for (auto& v : voices)
-        v.prepare (sr, maxBlock, numChannels);
+        v.prepare (sr, maxBlock, numChannels, resources);
     voiceOnTime.fill (0);
     sampleCounter = 0;
     lastNoteOnTime = 0;
@@ -157,6 +158,7 @@ void VoiceManager::render (float* const* out, int numChannels, int n)
         v.setParams (p);
         v.setAdsr (aA, aD, aS, aR);
         v.setPortamentoConfig (portaShape, portaTimeMs, portaCurve);
+        v.setEngineControl (engineControl);
         if (i < limit)
             v.render (out, numChannels, n);
         else if (v.isActive())

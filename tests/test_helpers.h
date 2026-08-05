@@ -30,13 +30,14 @@ inline SampleBuffer makeSine (double freqHz, double sampleRate, double seconds, 
 }
 
 // 立ち上がりゼロクロスを補間して基本周波数を推定する（清浄なサイン向け、<1cent 精度）。
-inline double estimateF0 (const float* x, int n, double sampleRate)
+// threshold: ノイズ由来の微小交差を除外する立ち上がり傾きの下限。
+inline double estimateF0 (const float* x, int n, double sampleRate, float threshold = 0.01f)
 {
     double firstT = -1.0, lastT = -1.0;
     int    count  = 0;
     for (int i = 1; i < n; ++i)
     {
-        if (x[i - 1] <= 0.0f && x[i] > 0.0f)
+        if (x[i - 1] <= 0.0f && x[i] > 0.0f && (x[i] - x[i - 1]) > threshold)
         {
             const double denom = (double) x[i] - (double) x[i - 1];
             const double frac  = denom != 0.0 ? (double) (-x[i - 1]) / denom : 0.0;

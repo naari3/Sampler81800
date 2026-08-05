@@ -7,6 +7,7 @@
 #include "SampleBuffer.h"
 #include "Voice.h"
 #include "PortamentoGenerator.h"
+#include "pitch/EngineResources.h"
 
 namespace otomad
 {
@@ -32,6 +33,8 @@ public:
                         float timeMs, float curve, float groupMs) noexcept;
     void setPoly (bool p, int maxV) noexcept { poly = p; maxVoices = juce::jlimit (1, kMaxVoices, maxV); }
     void setPitchBendSemi (float s) noexcept { bendSemi = s; }
+    void setEngineControl (const Voice::EngineControl& c) noexcept { engineControl = c; }
+    bool isFallbackActive() const noexcept { return engineControl.algorithm > 2; }
 
     void noteOn (int note, float velocity, const SampleBuffer* sample,
                  float sampleStart01, float sampleEnd01, bool snapZeroCross);
@@ -58,6 +61,8 @@ private:
     float bendSemi    = 0.0f;
 
     Voice::Params baseParams;
+    Voice::EngineControl engineControl;
+    EngineResources resources;
     float aA = 0.001f, aD = 0.1f, aS = 1.0f, aR = 0.05f;
 
     double        sampleRate = 44100.0;

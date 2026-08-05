@@ -17,10 +17,16 @@ add_executable(otomad_tests
     test_portamento.cpp
     test_glide.cpp
     test_voice_alloc.cpp
+    test_wsola.cpp
+    test_phasevocoder.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
     ${CMAKE_SOURCE_DIR}/src/core/PortamentoGenerator.cpp
     ${CMAKE_SOURCE_DIR}/src/core/GlideMatcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/pitch/VarispeedEngine.cpp)
+    ${CMAKE_SOURCE_DIR}/src/pitch/VarispeedEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/WsolaEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/PhaseVocoderEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/EngineResources.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/dsp/Fft.cpp)
 
 target_include_directories(otomad_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_features(otomad_tests PRIVATE cxx_std_20)
