@@ -14,6 +14,7 @@ add_executable(otomad_tests
     test_placeholder.cpp)
 
 target_compile_features(otomad_tests PRIVATE cxx_std_20)
+target_compile_options(otomad_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 target_link_libraries(otomad_tests PRIVATE Catch2::Catch2WithMain)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
