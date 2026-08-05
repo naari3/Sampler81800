@@ -273,11 +273,11 @@ void OtoMadSamplerProcessor::serviceCache()
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
                           hostSampleRate.load(), pFormant->load(), timeRatio);
 
-    // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±24 半音をまとめて背景生成（停止中に貯める）
+    // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±48 半音（全域）をまとめて背景生成（停止中に貯める）
     if (changed && useCachePath())
     {
         const int c = (int) pPitchSemi->load();
-        pitchCache.requestRange (c - 24, c + 24);
+        pitchCache.requestRange (c - 48, c + 48);
     }
 
     // 保留中の音程があれば背景スレッドでレンダリング（多重起動しない）
