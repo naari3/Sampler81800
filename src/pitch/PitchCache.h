@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -46,11 +47,19 @@ public:
         const int bit = semi - kMin;
         (bit < 64 ? reqLo : reqHi).fetch_or (1ull << (bit & 63), std::memory_order_release);
     }
+    // プリウォーム: 未生成の音程域をまとめてリクエスト（停止中に背景で貯める）。
+    void requestRange (int lo, int hi) noexcept
+    {
+        for (int s = std::max (lo, kMin); s <= std::min (hi, kMax); ++s)
+            if (ready[(std::size_t) (s - kMin)].load (std::memory_order_acquire) == nullptr)
+                request (s);
+    }
 
     // --- メッセージスレッド ---
     // 素材/モード/フォルマント/ストレッチ(timeRatio) が変わっていたら ready を無効化して作り直す。
     // （古いバッファは再生中の可能性があるので解放しない=graveyard保持）
-    void configure (const SampleBuffer* src, int version, int mode, int sub,
+    // 設定が変わっていたら true（プリウォームの再要求に使う）。
+    bool configure (const SampleBuffer* src, int version, int mode, int sub,
                     double sampleRate, float formant, double timeRatio);
     bool hasPending() const noexcept
     { return reqLo.load() != 0 || reqHi.load() != 0; }

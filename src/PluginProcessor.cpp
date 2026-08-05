@@ -269,9 +269,16 @@ void OtoMadSamplerProcessor::serviceCache()
     }
 
     // 素材/モード/フォルマント/ストレッチ を反映（変わっていれば ready を無効化して作り直す）
-    pitchCache.configure (activeSample.load(), sampleVersion.load(),
+    const bool changed = pitchCache.configure (activeSample.load(), sampleVersion.load(),
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
                           hostSampleRate.load(), pFormant->load(), timeRatio);
+
+    // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±24 半音をまとめて背景生成（停止中に貯める）
+    if (changed && useCachePath())
+    {
+        const int c = (int) pPitchSemi->load();
+        pitchCache.requestRange (c - 24, c + 24);
+    }
 
     // 保留中の音程があれば背景スレッドでレンダリング（多重起動しない）
     if (pitchCache.hasPending() && ! cacheJobRunning.exchange (true))

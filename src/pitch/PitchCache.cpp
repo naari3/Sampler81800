@@ -22,7 +22,7 @@ namespace otomad
 
 using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 
-void PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
+bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
                             double sampleRate, float formant, double timeRatio)
 {
     // 微小変化での再レンダリング連発を避けるため量子化
@@ -33,7 +33,7 @@ void PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
         && std::abs (sampleRate - curSr) < 1.0e-6
         && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6)
-        return;
+        return false;
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
     for (auto& p : ready) p.store (nullptr, std::memory_order_release);
@@ -42,6 +42,7 @@ void PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
     curFormant = fq; curTimeRatio = tq;
     ++curGen;   // 設定が変わった → 進行中のレンダリングは無効化される
+    return true;
 }
 
 bool PitchCache::renderPending()
