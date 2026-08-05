@@ -27,6 +27,7 @@ public:
     bool preservesDuration()   const override { return true; }
     bool supportsFormant()     const override { return true; }
     void setFormantShift (float semitones) override { formantSemi = semitones; }
+    void setPhaseLock (bool on) noexcept { phaseLock = on; }   // §4.4 identity phase locking
 
     void process (SourceReader& src, double& srcPos,
                   float* const* out, int numChannels, int n,
@@ -41,6 +42,7 @@ private:
     int  prepCh = 2;
     long cap = 8192;
     float formantSemi = 0.0f;
+    bool  phaseLock = true;
 
     bool   needInit = true, firstFrame = true;
     double analysisPos = 0.0, intReadPos = 0.0;
@@ -52,7 +54,8 @@ private:
     std::vector<std::vector<float>> prevPhase, sumPhase;   // [ch][nbins]
 
     std::vector<std::complex<float>> spec;   // [N] スクラッチ（1chずつ）
-    std::vector<float>               mag, phi, magShift;    // [nbins]
+    std::vector<float>               mag, phi, magShift, outPhase;    // [nbins]
+    std::vector<int>                 peaks;   // ピーク bin リスト
 };
 
 } // namespace otomad

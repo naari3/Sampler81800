@@ -44,6 +44,7 @@ public:
         double hostBpm      = 120.0;
         bool  hostBpmValid  = false;
         float formantSemi   = 0.0f;
+        bool  phaseLock     = true;
     };
 
     void prepare (double sampleRate, int maxBlock, int numChannels, EngineResources& resources);

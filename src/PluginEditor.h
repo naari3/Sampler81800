@@ -98,6 +98,8 @@ private:
 
     juce::ToggleButton snapButton { "Snap ZC" };
     std::unique_ptr<ButtonAttach> snapAttach;
+    juce::ToggleButton phaseLockButton { "Phase Lock" };
+    std::unique_ptr<ButtonAttach> phaseLockAttach;
 
     Knob* kSemi = nullptr; Knob* kCents = nullptr; Knob* kRoot = nullptr; Knob* kGain = nullptr;
     Knob* kAtk = nullptr;  Knob* kDec = nullptr;   Knob* kSus = nullptr;  Knob* kRel = nullptr;

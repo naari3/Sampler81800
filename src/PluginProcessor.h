@@ -113,6 +113,7 @@ private:
     std::atomic<float>* pSyncLength  = nullptr;
     std::atomic<float>* pStretch     = nullptr;
     std::atomic<float>* pFormant     = nullptr;
+    std::atomic<float>* pPhaseLock   = nullptr;
 
     double hostBpm = 120.0;
     bool   hostBpmValid = false;

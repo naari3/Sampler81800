@@ -68,6 +68,7 @@ void Voice::setEngineControl (const EngineControl& c) noexcept
 {
     control = c;
     activeEngine = pickEngine (c.algorithm);
+    phaseVocoder.setPhaseLock (c.phaseLock);
 }
 
 double Voice::resolveTimeRatio() noexcept

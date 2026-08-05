@@ -73,6 +73,23 @@ TEST_CASE ("PhaseVocoderEngine output is independent of block size", "[pv]")
     REQUIRE (maxDiff < 1.0e-3f);
 }
 
+// 位相ロック ON/OFF どちらでも F0 が保たれる（回帰）
+TEST_CASE ("PhaseVocoderEngine phase lock keeps pitch", "[pv]")
+{
+    auto res = makeRes();
+    auto src = test::makeSine (440.0, 48000.0, 1.5);
+    const double ratio = std::pow (2.0, 7.0 / 12.0);
+
+    for (bool lock : { true, false })
+    {
+        PhaseVocoderEngine e;
+        e.setPhaseLock (lock);
+        auto out = test::renderEngine (e, res, src, ratio, 1.0, 48000, 256);
+        const double f0 = test::estimateF0 (out.data() + 8000, 32000, 48000.0, 0.02f);
+        REQUIRE (f0 == Approx (440.0 * ratio).epsilon (tenCents));
+    }
+}
+
 // 無音入力で NaN/Inf を出さない
 TEST_CASE ("PhaseVocoderEngine is finite on silence", "[pv]")
 {

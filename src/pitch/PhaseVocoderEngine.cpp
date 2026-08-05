@@ -35,6 +35,9 @@ void PhaseVocoderEngine::prepare (const PitchEngineContext&, EngineResources& r)
     mag.assign ((std::size_t) nbins, 0.0f);
     phi.assign ((std::size_t) nbins, 0.0f);
     magShift.assign ((std::size_t) nbins, 0.0f);
+    outPhase.assign ((std::size_t) nbins, 0.0f);
+    peaks.clear();
+    peaks.reserve ((std::size_t) nbins);
 
     reset();
 }
@@ -100,11 +103,9 @@ void PhaseVocoderEngine::synthesizeFrame (SourceReader& src, double pitchRatio, 
         for (int k = 0; k < nbins; ++k)
             pp[(std::size_t) k] = phi[(std::size_t) k];
 
-        // フォルマント（任意・粗い包絡シフト）。formant=0 のときは恒等。
-        const float* useMag = mag.data();
+        // フォルマント（任意・粗い包絡シフト）。formant=0 のときは恒等。mag をインプレース更新。
         if (doFormant)
         {
-            // 移動平均で包絡を作り、比 fRatio で周波数方向にリサンプルして掛け替える
             constexpr int half = 12;
             for (int k = 0; k < nbins; ++k)
             {
@@ -114,22 +115,47 @@ void PhaseVocoderEngine::synthesizeFrame (SourceReader& src, double pitchRatio, 
                     const int kk = k + j;
                     if (kk >= 0 && kk < nbins) { s += mag[(std::size_t) kk]; ++c; }
                 }
-                magShift[(std::size_t) k] = c > 0 ? s / (float) c : 0.0f;   // env[k]
+                magShift[(std::size_t) k] = c > 0 ? s / (float) c : 0.0f;   // env[k]（元magから）
             }
             for (int k = 0; k < nbins; ++k)
             {
-                const float srcBin = (float) k / fRatio;
-                const int   b = std::clamp ((int) srcBin, 0, nbins - 1);
+                const int   b     = std::clamp ((int) ((float) k / fRatio), 0, nbins - 1);
                 const float envK  = magShift[(std::size_t) k] + 1.0e-9f;
-                const float envSh = magShift[(std::size_t) b];
-                phi[(std::size_t) k] = mag[(std::size_t) k] * (envSh / envK);   // phi 使い回し=出力mag
+                mag[(std::size_t) k] *= magShift[(std::size_t) b] / envK;
             }
-            useMag = phi.data();
+        }
+
+        // Identity phase locking（§4.4）: ピーク位相を通常伝播し、周辺binをピークに固定する。
+        const float* usePhase = sp.data();
+        if (phaseLock && ! firstFrame)
+        {
+            peaks.clear();
+            for (int k = 2; k < nbins - 2; ++k)
+                if (mag[(std::size_t) k] > mag[(std::size_t) (k - 1)] && mag[(std::size_t) k] > mag[(std::size_t) (k + 1)]
+                    && mag[(std::size_t) k] >= mag[(std::size_t) (k - 2)] && mag[(std::size_t) k] >= mag[(std::size_t) (k + 2)])
+                    peaks.push_back (k);
+
+            if (! peaks.empty())
+            {
+                int pi = 0;
+                for (int k = 0; k < nbins; ++k)
+                {
+                    while (pi + 1 < (int) peaks.size()
+                           && std::abs (peaks[(std::size_t) (pi + 1)] - k) <= std::abs (peaks[(std::size_t) pi] - k))
+                        ++pi;
+                    const int pk = peaks[(std::size_t) pi];
+                    outPhase[(std::size_t) k] = sp[(std::size_t) pk]
+                                              + (phi[(std::size_t) k] - phi[(std::size_t) pk]);
+                }
+                for (int k = 0; k < nbins; ++k)
+                    sp[(std::size_t) k] = outPhase[(std::size_t) k];   // 次フレームへ継承
+                usePhase = outPhase.data();
+            }
         }
 
         // 合成スペクトル
         for (int k = 0; k < nbins; ++k)
-            spec[(std::size_t) k] = std::polar (useMag[(std::size_t) k], sp[(std::size_t) k]);
+            spec[(std::size_t) k] = std::polar (mag[(std::size_t) k], usePhase[(std::size_t) k]);
         for (int k = 1; k < nbins - 1; ++k)
             spec[(std::size_t) (N - k)] = std::conj (spec[(std::size_t) k]);
 

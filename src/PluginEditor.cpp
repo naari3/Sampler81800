@@ -46,6 +46,8 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
 
     addAndMakeVisible (snapButton);
     snapAttach = std::make_unique<ButtonAttach> (processor.getAPVTS(), P::snapZeroCross, snapButton);
+    addAndMakeVisible (phaseLockButton);
+    phaseLockAttach = std::make_unique<ButtonAttach> (processor.getAPVTS(), P::phaseLock, phaseLockButton);
 
     statusLabel.setJustificationType (juce::Justification::centredLeft);
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::orange);
@@ -173,6 +175,8 @@ void OtoMadSamplerEditor::resized()
         auto row = grid; int c = 6;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
         place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
-        curveDisplay.setBounds (row.reduced (4));
+        auto last = row.reduced (4);
+        phaseLockButton.setBounds (last.removeFromTop (22));
+        curveDisplay.setBounds (last);
     }
 }

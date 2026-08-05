@@ -35,6 +35,7 @@ inline constexpr const char* syncLength    = "syncLength";
 inline constexpr const char* stretchAmount = "stretchAmount";
 inline constexpr const char* formant       = "formant";
 inline constexpr const char* reaperSubMode = "reaperSubMode";
+inline constexpr const char* phaseLock     = "phaseLock";
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -93,6 +94,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { formant, 1 }, "Formant",
                     NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 31, 0));
+    layout.add (std::make_unique<AudioParameterBool>  (ParameterID { phaseLock, 1 }, "Phase Lock", true));
 
     return layout;
 }

@@ -40,6 +40,7 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pSyncLength  = apvts.getRawParameterValue (otomad::params::syncLength);
     pStretch     = apvts.getRawParameterValue (otomad::params::stretchAmount);
     pFormant     = apvts.getRawParameterValue (otomad::params::formant);
+    pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
 }
 
 //==============================================================================
@@ -93,6 +94,7 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     ec.hostBpm      = hostBpm;
     ec.hostBpmValid = hostBpmValid;
     ec.formantSemi  = pFormant->load();
+    ec.phaseLock    = pPhaseLock->load() > 0.5f;
     voices.setEngineControl (ec);
 }
 
