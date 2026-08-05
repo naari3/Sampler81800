@@ -103,6 +103,8 @@ private:
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
     void handleMidiMessage (const juce::MidiMessage& msg) noexcept;
     void updateVoiceParams() noexcept;
+    void publishSample (std::shared_ptr<const otomad::SampleBuffer> sb);   // graveyard+atomic公開
+    void restoreSample (const juce::XmlElement& sampleXml);                // §3.9 復元
 
     juce::AudioProcessorValueTreeState apvts;
     juce::MidiKeyboardState            keyboardState;

@@ -29,6 +29,7 @@ struct SampleBuffer
     double       originalSampleRate = 0.0;
 
     std::string  name;
+    std::string  path;                            // 元ファイルのフルパス（保存/再読込用, §3.9）
     std::vector<std::pair<float, float>> peaks;   // (min,max) per bucket, モノミックス
 
     // 範囲外は 0。再生バッファ(data)への生アクセス。

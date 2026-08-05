@@ -210,22 +210,26 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) no
 }
 
 //==============================================================================
+void OtoMadSamplerProcessor::publishSample (std::shared_ptr<const otomad::SampleBuffer> sb)
+{
+    if (sb == nullptr)
+        return;
+    {
+        const juce::ScopedLock sl (graveyardLock);
+        sampleGraveyard.push_back (sb);
+    }
+    activeSample.store (sb.get());
+    normGain.store (1.0f);
+    sampleVersion.fetch_add (1);
+}
+
 void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
 {
     const double sr = hostSampleRate.load();
     loadPool.addJob ([this, file, sr]
     {
-        auto sb = otomad::SampleLoader::loadFile (file, sr, formatManager);
-        if (sb == nullptr)
-            return;
-
-        {
-            const juce::ScopedLock sl (graveyardLock);
-            sampleGraveyard.push_back (sb);
-        }
-        activeSample.store (sb.get());
-        normGain.store (1.0f);          // 新規読み込みでノーマライズをリセット
-        sampleVersion.fetch_add (1);
+        if (auto sb = otomad::SampleLoader::loadFile (file, sr, formatManager))
+            publishSample (sb);
     });
 }
 
@@ -307,16 +311,101 @@ void OtoMadSamplerProcessor::normalizeSample()
 //==============================================================================
 void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // Phase 1 は APVTS のみ保存。サンプル埋め込みは Phase 5。
-    if (auto xml = apvts.copyState().createXml())
-        copyXmlToBinary (*xml, destData);
+    auto root = std::make_unique<juce::XmlElement> ("OtoMadState");
+
+    if (auto apvtsXml = apvts.copyState().createXml())
+        root->addChildElement (apvtsXml.release());
+
+    // サンプルを埋め込み保存（FLAC）＋パス（§3.9）
+    if (const auto* sb = activeSample.load())
+    {
+        auto* se = root->createNewChildElement ("sample");
+        se->setAttribute ("name", juce::String (sb->name));
+        se->setAttribute ("path", juce::String (sb->path));
+
+        juce::MemoryBlock flacData;
+        float normScale = 1.0f;
+        if (otomad::SampleLoader::encodeOriginalToFlac (*sb, flacData, normScale))
+        {
+            se->setAttribute ("embedded", 1);
+            se->setAttribute ("format", "flac");
+            se->setAttribute ("srcSampleRate", sb->originalSampleRate);
+            se->setAttribute ("normScale", (double) normScale);
+            se->addTextElement (flacData.toBase64Encoding());
+        }
+        else
+        {
+            se->setAttribute ("embedded", 0);
+        }
+    }
+
+    copyXmlToBinary (*root, destData);
 }
 
 void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr)
+        return;
+
+    juce::XmlElement* apvtsXml  = nullptr;
+    juce::XmlElement* sampleXml = nullptr;
+
+    if (xml->hasTagName (apvts.state.getType()))
+        apvtsXml = xml.get();                                   // 旧形式（APVTSのみ）
+    else if (xml->hasTagName ("OtoMadState"))
+    {
+        apvtsXml  = xml->getChildByName (apvts.state.getType());
+        sampleXml = xml->getChildByName ("sample");
+    }
+
+    if (apvtsXml != nullptr)
+        apvts.replaceState (juce::ValueTree::fromXml (*apvtsXml));
+
+    if (sampleXml != nullptr)
+        restoreSample (*sampleXml);
+}
+
+void OtoMadSamplerProcessor::restoreSample (const juce::XmlElement& se)
+{
+    const double sr = hostSampleRate.load();
+    std::shared_ptr<otomad::SampleBuffer> sb;
+
+    // 埋め込み優先
+    if ((int) se.getIntAttribute ("embedded", 0) == 1)
+    {
+        juce::MemoryBlock mb;
+        if (mb.fromBase64Encoding (se.getAllSubText()))
+            sb = otomad::SampleLoader::loadFromFlacMemory (mb.getData(), mb.getSize(), sr);
+
+        if (sb != nullptr)
+        {
+            const float scale = (float) se.getDoubleAttribute ("normScale", 1.0);
+            if (scale != 1.0f)   // 保存時に正規化した分を戻す
+            {
+                for (auto& ch : sb->original) for (auto& v : ch) v *= scale;
+                for (auto& ch : sb->data)     for (auto& v : ch) v *= scale;
+                for (auto& p : sb->peaks) { p.first *= scale; p.second *= scale; }
+            }
+        }
+    }
+
+    // ダメならパスから
+    if (sb == nullptr)
+    {
+        const juce::String path = se.getStringAttribute ("path");
+        const juce::File f (path);
+        if (path.isNotEmpty() && f.existsAsFile())
+            sb = otomad::SampleLoader::loadFile (f, sr, formatManager);
+    }
+
+    if (sb != nullptr)
+    {
+        sb->name = se.getStringAttribute ("name").toStdString();
+        sb->path = se.getStringAttribute ("path").toStdString();
+        publishSample (sb);
+    }
+    // 両方失敗 → サンプル無しのまま（GUI表示のみ、クラッシュしない, §3.9）
 }
 
 //==============================================================================

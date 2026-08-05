@@ -14,4 +14,11 @@ std::shared_ptr<SampleBuffer> loadFile (const juce::File& file,
                                         double hostSampleRate,
                                         juce::AudioFormatManager& formatManager);
 
+// 埋め込みFLAC（原音）から復元。失敗時 nullptr。
+std::shared_ptr<SampleBuffer> loadFromFlacMemory (const void* data, std::size_t size,
+                                                  double hostSampleRate);
+
+// 原音を FLAC(24bit)へエンコード。|x|>1 は normScale で正規化して保存（復元時に戻す）。
+bool encodeOriginalToFlac (const SampleBuffer& sb, juce::MemoryBlock& out, float& normScale);
+
 } // namespace otomad::SampleLoader
