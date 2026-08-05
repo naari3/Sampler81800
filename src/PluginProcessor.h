@@ -133,6 +133,7 @@ private:
 
     double hostBpm = 120.0;
     bool   hostBpmValid = false;
+    int    lastReportedLatency = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };

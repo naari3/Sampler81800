@@ -16,14 +16,12 @@ namespace otomad
 {
 namespace host { class ReaperApi; }
 
-
-// 固定レイテンシ (§5.5)。WSOLA/PV の intrinsic (=frame/fft=2048) を覆う定数。
-inline constexpr int kFixedLatency = 2048;
-
 //==============================================================================
 /**
-    ボイス。DESIGN.md §3.6。Phase 3 で **エンジンをボイス所有**（規約9）、timeRatio(durationMode)、
-    固定レイテンシ整列、テールドレイン（getTailSamples + 整列分）を確定。
+    ボイス。DESIGN.md §3.6。エンジンをボイス所有（規約9）、timeRatio(durationMode)。
+    レイテンシは**アクティブエンジンの実レイテンシをそのまま採用**する（固定整列は廃止）。
+    Varispeed=0（生演奏で低遅延）、WSOLA/PV=frame/fft、REAPER=élastique実測。
+    テールは getTailSamples() 全量をドレインする（切らない, §3.6）。
 */
 class Voice
 {
@@ -75,6 +73,9 @@ public:
     int   getNote() const noexcept     { return midiNote; }
     float currentPitchNote() const noexcept { return porta.current(); }
 
+    // 指定アルゴリズムを選んだ場合に報告すべきレイテンシ（pickEngine と整合）。
+    int   getReportedLatency (int algorithm) const noexcept;
+
     void render (float* const* out, int numChannels, int n) noexcept;
 
 private:
@@ -95,6 +96,9 @@ private:
     float  velocity = 1.0f;
     double srcPos = 0.0;
     bool   sourceReleaseTriggered = false;
+    // エンベロープをエンジンのレイテンシ分だけ遅らせて音と揃える（高レイテンシ系で短音が消えるのを防ぐ）
+    int    pendingOn  = -1;   // adsr.noteOn() 発火までの残りサンプル（-1=発火済/無し）
+    int    pendingOff = -1;   // adsr.noteOff() 発火までの残りサンプル
     long   drainCounter = 0;
     double sampleRate = 44100.0;
 
@@ -121,9 +125,6 @@ private:
     std::vector<std::vector<float>> scratch;
     std::vector<float>              noteBuf, ratioBuf;
     std::vector<float*>             scratchPtrs;
-    std::vector<std::vector<float>> delayRing;   // [ch][kFixedLatency+8] 整列遅延
-    int  delayPos = 0;
-    int  delaySize = 0;
     int  preparedChannels = 0;
     int  preparedBlock    = 0;
 };

@@ -50,7 +50,8 @@ void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 {
     hostSampleRate.store (sampleRate);
     voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
-    setLatencySamples (otomad::kFixedLatency);   // 固定レイテンシ (§5.5)
+    lastReportedLatency = voices.getCurrentLatency();      // 既定(Varispeed)=0
+    setLatencySamples (lastReportedLatency);
 }
 
 bool OtoMadSamplerProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -123,6 +124,14 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     keyboardState.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), true);
 
     updateVoiceParams();
+
+    // アルゴリズム変更時のみレイテンシ報告を更新（毎ブロックは呼ばない）
+    const int lat = voices.getCurrentLatency();
+    if (lat != lastReportedLatency)
+    {
+        lastReportedLatency = lat;
+        setLatencySamples (lat);
+    }
 
     // ---- §2.2 : MIDIイベント位置でブロックを分割してレンダリング ----
     int pos = 0;

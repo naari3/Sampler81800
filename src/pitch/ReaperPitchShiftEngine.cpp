@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>   // ★デバッグログ（実機検証用・後で削除）
 
 namespace otomad
 {
@@ -80,6 +81,13 @@ void ReaperPitchShiftEngine::prepare (const PitchEngineContext& ctx, EngineResou
         if (fed > (int) sampleRate) break;   // 1秒でも出なければ諦める
     }
     ps->Reset();
+
+    // ★デバッグ: 実測レイテンシをログ（メッセージスレッド・後で削除）
+    {
+        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
+        f << "prepare: probed latency=" << latency
+          << " sr=" << sampleRate << " nch=" << numCh << "\n";
+    }
 }
 
 void ReaperPitchShiftEngine::reset()

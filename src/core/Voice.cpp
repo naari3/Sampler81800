@@ -20,10 +20,6 @@ void Voice::prepare (double sr, int maxBlock, int numChannels,
     noteBuf.assign ((std::size_t) preparedBlock, 0.0f);
     ratioBuf.assign ((std::size_t) preparedBlock, 1.0f);
 
-    delaySize = kFixedLatency + 8;
-    delayRing.assign ((std::size_t) preparedChannels, std::vector<float> ((std::size_t) delaySize, 0.0f));
-    delayPos = 0;
-
     const PitchEngineContext ctx { sr, preparedBlock, preparedChannels };
     varispeed.prepare (ctx, resources);
     wsola.prepare (ctx, resources);
@@ -125,13 +121,26 @@ void Voice::startNote (const Pending& p) noexcept
     wsola.reset();
     phaseVocoder.reset();
     reaper.reset();
-    for (auto& d : delayRing) std::fill (d.begin(), d.end(), 0.0f);
 
     if (p.glide) porta.startGlide (p.originNote, (float) p.note);
     else         porta.startAt ((float) p.note);
 
     adsr.setParameters (adsrParams);
-    adsr.noteOn();
+
+    // エンベロープ開始をエンジンのレイテンシ分だけ遅らせる（音の出力遅延と揃える）
+    const int lat = activeEngine ? activeEngine->getIntrinsicLatency() : 0;
+    pendingOff = -1;
+    if (lat <= 0)
+    {
+        adsr.noteOn();
+        pendingOn = -1;
+    }
+    else
+    {
+        adsr.reset();       // 遅延中はアイドル（音も無音なので整合）
+        pendingOn = lat;
+    }
+
     active = true;
     stealing = false;
     stealGain = 1.0f;
@@ -166,12 +175,19 @@ void Voice::setGlideOrigin (float originNote) noexcept { porta.setOrigin (origin
 
 void Voice::noteOff() noexcept
 {
-    if (active && ! stealing) { adsr.noteOff(); released = true; }
+    if (active && ! stealing)
+    {
+        const int lat = activeEngine ? activeEngine->getIntrinsicLatency() : 0;
+        if (lat <= 0) adsr.noteOff();
+        else          pendingOff = lat;   // リリースもレイテンシ分遅らせる
+        released = true;
+    }
 }
 
 void Voice::stop() noexcept
 {
     active = false; stealing = false; stealGain = 1.0f;
+    pendingOn = -1; pendingOff = -1;
     adsr.reset();
 }
 
@@ -181,6 +197,18 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
         return;
 
     const int nch = juce::jmin (numChannels, preparedChannels);
+
+    // 遅延したエンベロープイベントの発火（ブロック粒度）。音の出力遅延に揃える。
+    if (pendingOn >= 0)
+    {
+        if (pendingOn <= n) { adsr.noteOn(); pendingOn = -1; }
+        else                  pendingOn -= n;
+    }
+    if (pendingOff >= 0)
+    {
+        if (pendingOff <= n) { adsr.noteOff(); pendingOff = -1; }
+        else                   pendingOff -= n;
+    }
 
     // timeRatio（20msスムージング, §4.7）
     timeRatioSmooth.setTargetValue (resolveTimeRatio());
@@ -201,16 +229,18 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
 
     activeEngine->process (reader, srcPos, scratchPtrs.data(), nch, n, ratioBuf.data(), tr);
 
-    // 素材を読み切ったらリリース開始 + テールドレイン計測
+    // 素材を読み切ったらリリース開始（レイテンシ分遅らせる）+ テールドレイン計測
     const bool srcDone = reader.isFinished (srcPos);
     if (! sourceReleaseTriggered && srcDone)
     {
-        adsr.noteOff(); released = true; sourceReleaseTriggered = true;
+        const int lat = activeEngine->getIntrinsicLatency();
+        if (lat <= 0)            adsr.noteOff();
+        else if (pendingOff < 0) pendingOff = lat;
+        released = true; sourceReleaseTriggered = true;
     }
     if (srcDone) drainCounter += n; else drainCounter = 0;
 
-    // 固定レイテンシ整列遅延 + エンベロープ + ゲイン
-    const int delay = juce::jlimit (0, delaySize - 1, kFixedLatency - activeEngine->getIntrinsicLatency());
+    // エンベロープ + ゲイン（レイテンシ整列は廃止、エンジン出力をそのまま加算）
     for (int i = 0; i < n; ++i)
     {
         float g = adsr.getNextSample() * velocity * params.gainLin;
@@ -221,13 +251,7 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
             if (stealGain < 0.0f) stealGain = 0.0f;
         }
         for (int ch = 0; ch < nch; ++ch)
-        {
-            auto& ring = delayRing[(std::size_t) ch];
-            ring[(std::size_t) delayPos] = scratch[(std::size_t) ch][(std::size_t) i];
-            const int rp = (delayPos - delay + delaySize) % delaySize;
-            out[ch][i] += ring[(std::size_t) rp] * g;
-        }
-        delayPos = (delayPos + 1) % delaySize;
+            out[ch][i] += scratch[(std::size_t) ch][(std::size_t) i] * g;
     }
 
     if (stealing && stealGain <= 0.0f)
@@ -236,10 +260,25 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
         return;
     }
 
-    const int totalTail = activeEngine->getTailSamples()
-                        + (kFixedLatency - activeEngine->getIntrinsicLatency());
-    if (! stealing && ! adsr.isActive() && (! srcDone || drainCounter >= totalTail))
+    // 素材を読み切った後、エンジン内部テール(getTailSamples)を全量ドレインしてから停止（切らない）。
+    // 遅延エンベロープ発火待ち(pendingOn/Off)の間は落とさない（音がこれから出るため）。
+    const bool envPending = (pendingOn >= 0 || pendingOff >= 0);
+    const int  totalTail  = activeEngine->getTailSamples();
+    if (! stealing && ! envPending && ! adsr.isActive() && (! srcDone || drainCounter >= totalTail))
         active = false;
+}
+
+int Voice::getReportedLatency (int algorithm) const noexcept
+{
+    switch (algorithm)
+    {
+        case 0: return varispeed.getIntrinsicLatency();        // 0（生演奏で低遅延）
+        case 1: return wsola.getIntrinsicLatency();
+        case 2: return phaseVocoder.getIntrinsicLatency();
+        case 5: return reaper.isAvailable() ? reaper.getIntrinsicLatency()
+                                            : phaseVocoder.getIntrinsicLatency();
+        default: return phaseVocoder.getIntrinsicLatency();    // 3,4 は PV フォールバック
+    }
 }
 
 } // namespace otomad
