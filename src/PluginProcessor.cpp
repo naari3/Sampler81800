@@ -256,10 +256,18 @@ juce::StringArray OtoMadSamplerProcessor::getReaperSubModeNames (int mode) const
 
 void OtoMadSamplerProcessor::serviceCache()
 {
-    // 素材/モード/SR を反映（変わっていれば ready を無効化）
+    // Manual のときは stretchAmount から timeRatio を算出（Natural は 1.0）
+    double timeRatio = 1.0;
+    if ((int) pDurationMode->load() == 2)
+    {
+        const float st = pStretch->load();
+        timeRatio = st > 0.0f ? 1.0 / (double) st : 1.0;
+    }
+
+    // 素材/モード/フォルマント/ストレッチ を反映（変わっていれば ready を無効化して作り直す）
     pitchCache.configure (activeSample.load(), sampleVersion.load(),
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
-                          hostSampleRate.load());
+                          hostSampleRate.load(), pFormant->load(), timeRatio);
 
     // 保留中の音程があれば背景スレッドでレンダリング（多重起動しない）
     if (pitchCache.hasPending() && ! cacheJobRunning.exchange (true))

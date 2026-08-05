@@ -22,11 +22,17 @@ namespace otomad
 
 using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 
-void PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub, double sampleRate)
+void PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
+                            double sampleRate, float formant, double timeRatio)
 {
+    // 微小変化での再レンダリング連発を避けるため量子化
+    const float  fq = std::round (formant * 4.0f) / 4.0f;        // 0.25半音刻み
+    const double tq = std::round (timeRatio * 100.0) / 100.0;    // 0.01刻み
+
     std::lock_guard<std::mutex> lock (ownerLock);
     if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
-        && std::abs (sampleRate - curSr) < 1.0e-6)
+        && std::abs (sampleRate - curSr) < 1.0e-6
+        && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6)
         return;
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
@@ -34,6 +40,7 @@ void PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     reqLo.store (0); reqHi.store (0);
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
+    curFormant = fq; curTimeRatio = tq;
 }
 
 bool PitchCache::renderPending()
@@ -70,10 +77,11 @@ bool PitchCache::renderPending()
 std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedVersion)
 {
     // 素材/モードのスナップショット
-    const SampleBuffer* src; int mode, sub; double sr;
+    const SampleBuffer* src; int mode, sub; double sr; float formant; double timeRatio;
     {
         std::lock_guard<std::mutex> lock (ownerLock);
         src = curSrc; mode = curMode; sub = curSub; sr = curSr;
+        formant = curFormant; timeRatio = curTimeRatio;
         usedVersion = curVersion;
     }
     if (api == nullptr || src == nullptr || src->numSamples <= 0)
@@ -92,7 +100,8 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedVersio
     ps->set_srate (sr);
     ps->set_nch (numCh);
     ps->set_shift (shift);
-    ps->set_tempo (1.0);                 // 長さ保持
+    ps->set_formant_shift ((double) formant);            // フォルマントを焼き込む
+    ps->set_tempo (timeRatio > 0.0 ? timeRatio : 1.0);   // ストレッチ(長さ)を焼き込む
     ps->SetQualityParameter ((mode << 16) + sub);
     ps->Reset();
 
@@ -151,23 +160,23 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedVersio
     drain();
     delete ps;
 
-    // 頭の latency 分を捨てて素材と整列、長さは原音長に揃える
+    // 頭の latency 分を捨てて素材と整列。長さは実際の出力長（ストレッチで変わる）。
     auto sb = std::make_shared<SampleBuffer>();
-    sb->numChannels       = numCh;
-    sb->sampleRate        = sr;
+    sb->numChannels        = numCh;
+    sb->sampleRate         = sr;
     sb->originalSampleRate = sr;
-    sb->name              = src->name + "_shift";
+    sb->name               = src->name + "_shift";
     sb->data.assign ((std::size_t) numCh, {});
     const std::size_t avail = out.empty() ? 0 : out[0].size();
     const std::size_t start = std::min ((std::size_t) latency, avail);
-    const std::size_t len   = std::min ((std::size_t) n, avail - start);
+    const std::size_t len   = avail - start;
     for (int ch = 0; ch < numCh; ++ch)
     {
-        sb->data[(std::size_t) ch].assign ((std::size_t) n, 0.0f);
+        sb->data[(std::size_t) ch].assign (len, 0.0f);
         for (std::size_t i = 0; i < len; ++i)
             sb->data[(std::size_t) ch][i] = out[(std::size_t) ch][start + i];
     }
-    sb->numSamples = n;
+    sb->numSamples = (std::int64_t) len;
     return sb;
 }
 

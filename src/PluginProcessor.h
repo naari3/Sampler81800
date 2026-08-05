@@ -115,13 +115,13 @@ private:
     otomad::PitchCache      pitchCache;
     std::atomic<bool>       cacheJobRunning { false };
 
-    // REAPER Shifter + Natural + formant0 のときはキャッシュ経路（Varispeed再生）を使う。
+    // REAPER Shifter で Natural / Manual のときキャッシュ経路（Varispeed再生）を使う。
+    // formant / stretch はキャッシュに焼き込むので可。Sync はテンポ依存で動的なので除外。
     bool useCachePath() const noexcept
     {
-        const float f = pFormant->load();
-        return (int) pAlgorithm->load() == 5
-            && (int) pDurationMode->load() == 0
-            && f < 0.01f && f > -0.01f;
+        if ((int) pAlgorithm->load() != 5) return false;
+        const int dur = (int) pDurationMode->load();
+        return dur == 0 || dur == 2;   // Natural or Manual
     }
 
     std::atomic<double> hostSampleRate { 44100.0 };

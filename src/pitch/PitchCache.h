@@ -48,8 +48,10 @@ public:
     }
 
     // --- メッセージスレッド ---
-    // 素材/モードが変わっていたら ready を無効化（古いバッファは安全のため解放しない=graveyard保持）。
-    void configure (const SampleBuffer* src, int version, int mode, int sub, double sampleRate);
+    // 素材/モード/フォルマント/ストレッチ(timeRatio) が変わっていたら ready を無効化して作り直す。
+    // （古いバッファは再生中の可能性があるので解放しない=graveyard保持）
+    void configure (const SampleBuffer* src, int version, int mode, int sub,
+                    double sampleRate, float formant, double timeRatio);
     bool hasPending() const noexcept
     { return reqLo.load() != 0 || reqHi.load() != 0; }
 
@@ -69,6 +71,8 @@ private:
     const SampleBuffer* curSrc = nullptr;
     int    curVersion = -1, curMode = 0, curSub = 0;
     double curSr = 48000.0;
+    float  curFormant = 0.0f;      // 量子化済み（0.25半音刻み）
+    double curTimeRatio = 1.0;     // 量子化済み（0.01刻み）
     std::vector<std::shared_ptr<const SampleBuffer>> graveyard;   // 再生中バッファの寿命保持
 };
 
