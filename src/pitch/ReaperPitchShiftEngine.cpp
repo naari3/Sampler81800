@@ -17,7 +17,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
-#include <fstream>   // ★デバッグログ（実機検証用・後で削除）
 
 namespace otomad
 {
@@ -87,13 +86,6 @@ void ReaperPitchShiftEngine::applyMode()
     latency = probeLatencyOf (ps, numCh, sampleRate);
     lastShift = -1.0;
     lastTempo = -1.0;
-
-    // ★選択中モードの確認ログ（実機検証用・後で削除）
-    {
-        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
-        f << "apply: mode=" << mode << "(" << modeName << ") sub=" << sub << "(" << subName << ")"
-          << " numModes=" << numModes << " numSubs=" << numSubs << " lat=" << latency << "\n";
-    }
 }
 
 void ReaperPitchShiftEngine::reconfigure()
