@@ -51,6 +51,7 @@ target_sources(OtoMadSampler PRIVATE
     src/pitch/WsolaEngine.cpp
     src/pitch/PhaseVocoderEngine.cpp
     src/pitch/ReaperPitchShiftEngine.cpp
+    src/pitch/PitchCache.cpp
     src/pitch/EngineResources.cpp
     src/pitch/dsp/Fft.cpp
     src/host/ReaperApi.cpp

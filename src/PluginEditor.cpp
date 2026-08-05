@@ -86,6 +86,8 @@ void OtoMadSamplerEditor::setIntParam (const juce::String& id, int value)
 
 void OtoMadSamplerEditor::timerCallback()
 {
+    processor.serviceCache();   // ピッチキャッシュの保守（背景レンダリング要求の処理）
+
     auto& apvts = processor.getAPVTS();
     const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
     const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();

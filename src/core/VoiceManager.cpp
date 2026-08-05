@@ -63,7 +63,8 @@ void VoiceManager::rematchGroupOrigins()
 }
 
 void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
-                           float s01, float e01, bool snap)
+                           float s01, float e01, bool snap,
+                           bool useVarispeed, float prePitchedSemi)
 {
     const auto now = sampleCounter;
 
@@ -76,7 +77,7 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
         if (doGlide)
             v.glideTo (note);                                   // ピッチのみ滑らす
         else
-            v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note);
+            v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
 
         voiceOnTime[0] = now;
         monoNote = note;
@@ -106,9 +107,9 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
 
     const bool steal = v.isActive() && v.getNote() != note;
     if (steal)
-        v.requestSteal (sample, note, vel, s01, e01, snap, false, (float) note);
+        v.requestSteal (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
     else
-        v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note);
+        v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
 
     voiceOnTime[(std::size_t) slot] = now;
 

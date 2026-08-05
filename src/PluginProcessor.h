@@ -10,6 +10,7 @@
 #include "core/SampleBuffer.h"
 #include "core/VoiceManager.h"
 #include "host/ReaperApi.h"
+#include "pitch/PitchCache.h"
 
 namespace otomad { }
 
@@ -90,6 +91,9 @@ public:
     // REAPERシフタのモード変更を反映（メッセージスレッド, suspend下で再設定＋レイテンシ再報告）。
     void reconfigureReaperMode();
 
+    // ピッチキャッシュの保守（メッセージスレッド, Editorのタイマーから）。
+    void serviceCache();
+
     // コンボボックス用: REAPER のモード名 / サブモード名を列挙（メッセージスレッド）。
     juce::StringArray getReaperModeNames() const;
     juce::StringArray getReaperSubModeNames (int mode) const;
@@ -108,6 +112,17 @@ private:
 
     otomad::VoiceManager voices;
     otomad::host::ReaperApi reaperApi;
+    otomad::PitchCache      pitchCache;
+    std::atomic<bool>       cacheJobRunning { false };
+
+    // REAPER Shifter + Natural + formant0 のときはキャッシュ経路（Varispeed再生）を使う。
+    bool useCachePath() const noexcept
+    {
+        const float f = pFormant->load();
+        return (int) pAlgorithm->load() == 5
+            && (int) pDurationMode->load() == 0
+            && f < 0.01f && f > -0.01f;
+    }
 
     std::atomic<double> hostSampleRate { 44100.0 };
 

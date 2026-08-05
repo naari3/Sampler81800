@@ -72,7 +72,8 @@ void Voice::setEngineControl (const EngineControl& c) noexcept
     control = c;
     reaper.setMode (c.reaperMode);
     reaper.setSubMode (c.reaperSubMode);
-    activeEngine = pickEngine (c.algorithm);
+    // cached再生/フォールバック中は Varispeed を強制（アルゴリズム選択より優先）
+    activeEngine = useVarispeed ? static_cast<IPitchEngine*> (&varispeed) : pickEngine (c.algorithm);
     phaseVocoder.setPhaseLock (c.phaseLock);
 }
 
@@ -107,6 +108,8 @@ void Voice::startNote (const Pending& p) noexcept
 
     midiNote = p.note;
     velocity = juce::jlimit (0.0f, 1.0f, p.vel);
+    useVarispeed   = p.useVarispeed;
+    prePitchedSemi = p.prePitchedSemi;
 
     const auto n = p.sample->numSamples;
     const auto s = (std::int64_t) std::floor ((double) juce::jlimit (0.0f, 1.0f, p.s01) * (double) n);
@@ -148,15 +151,18 @@ void Voice::startNote (const Pending& p) noexcept
 }
 
 void Voice::noteOn (const SampleBuffer* sample, int note, float vel,
-                    float s01, float e01, bool snap, bool glide, float originNote)
+                    float s01, float e01, bool snap, bool glide, float originNote,
+                    bool useVarispeed_, float prePitchedSemi_)
 {
-    startNote (Pending { sample, note, vel, s01, e01, snap, glide, originNote });
+    startNote (Pending { sample, note, vel, s01, e01, snap, glide, originNote,
+                         useVarispeed_, prePitchedSemi_ });
 }
 
 void Voice::requestSteal (const SampleBuffer* sample, int note, float vel,
-                          float s01, float e01, bool snap, bool glide, float originNote)
+                          float s01, float e01, bool snap, bool glide, float originNote,
+                          bool useVarispeed_, float prePitchedSemi_)
 {
-    Pending p { sample, note, vel, s01, e01, snap, glide, originNote };
+    Pending p { sample, note, vel, s01, e01, snap, glide, originNote, useVarispeed_, prePitchedSemi_ };
     if (! active) { startNote (p); return; }
     pending   = p;
     stealing  = true;
@@ -220,8 +226,9 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
 
     // ピッチ（ノート番号 → 比）
     porta.process (noteBuf.data(), n);
+    // prePitchedSemi は sample に既に焼き込まれたシフト量。二重に掛からないよう差し引く。
     const float base = params.pitchSemi + params.pitchCents * 0.01f
-                     + params.pitchBendSemi - (float) params.rootKey;
+                     + params.pitchBendSemi - (float) params.rootKey - prePitchedSemi;
     for (int i = 0; i < n; ++i)
         ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base) / 12.0f);
 

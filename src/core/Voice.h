@@ -58,14 +58,18 @@ public:
     void setEngineControl (const EngineControl& c) noexcept;   // fallback判定込み
     bool isFallbackActive() const noexcept { return fallbackActive; }
 
+    // useVarispeed: このノートは Varispeed で鳴らす（キャッシュ再生/フォールバック用）。
+    // prePitchedSemi: sample が既に何半音シフト済みか（cached再生で二重シフトを避ける）。
     void noteOn (const SampleBuffer* sample, int midiNote, float velocity,
                  float sampleStart01, float sampleEnd01, bool snapZeroCross,
-                 bool glide, float originNote);
+                 bool glide, float originNote,
+                 bool useVarispeed = false, float prePitchedSemi = 0.0f);
     void glideTo (int midiNote) noexcept;
     void setGlideOrigin (float originNote) noexcept;
     void requestSteal (const SampleBuffer* sample, int midiNote, float velocity,
                        float sampleStart01, float sampleEnd01, bool snapZeroCross,
-                       bool glide, float originNote);
+                       bool glide, float originNote,
+                       bool useVarispeed = false, float prePitchedSemi = 0.0f);
     void noteOff() noexcept;
     void stop() noexcept;
 
@@ -97,6 +101,7 @@ private:
         int note = 0; float vel = 0.0f;
         float s01 = 0.0f, e01 = 1.0f; bool snap = false;
         bool glide = false; float originNote = 0.0f;
+        bool useVarispeed = false; float prePitchedSemi = 0.0f;
     };
     void startNote (const Pending& p) noexcept;
     double resolveTimeRatio() noexcept;
@@ -104,6 +109,8 @@ private:
 
     bool   active = false;
     bool   released = false;
+    bool   useVarispeed = false;      // cached再生/フォールバック時 true
+    float  prePitchedSemi = 0.0f;     // sample が既にシフト済みの半音
     int    midiNote = -1;
     float  velocity = 1.0f;
     double srcPos = 0.0;

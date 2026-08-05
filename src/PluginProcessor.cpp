@@ -15,6 +15,7 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
       apvts (*this, nullptr, "PARAMS", otomad::params::createLayout())
 {
     formatManager.registerBasicFormats();
+    pitchCache.setApi (&reaperApi);
 
     pPitchSemi   = apvts.getRawParameterValue (otomad::params::pitchSemi);
     pPitchCents  = apvts.getRawParameterValue (otomad::params::pitchCents);
@@ -127,8 +128,8 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     updateVoiceParams();
 
-    // アルゴリズム変更時のみレイテンシ報告を更新（毎ブロックは呼ばない）
-    const int lat = voices.getCurrentLatency();
+    // レイテンシ報告（変化時のみ）。キャッシュ経路は Varispeed 再生なので 0。
+    const int lat = useCachePath() ? 0 : voices.getCurrentLatency();
     if (lat != lastReportedLatency)
     {
         lastReportedLatency = lat;
@@ -171,8 +172,27 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) no
 {
     if (msg.isNoteOn())
     {
-        voices.noteOn (msg.getNoteNumber(), msg.getFloatVelocity(), activeSample.load(),
-                       pSampleStart->load(), pSampleEnd->load(), pSnap->load() > 0.5f);
+        const int   note = msg.getNoteNumber();
+        const float vel  = msg.getFloatVelocity();
+        const float s = pSampleStart->load(), e = pSampleEnd->load();
+        const bool  snap = pSnap->load() > 0.5f;
+
+        if (useCachePath())
+        {
+            const int semi = juce::jlimit (otomad::PitchCache::kMin, otomad::PitchCache::kMax,
+                                           note - (int) pRootKey->load() + (int) pPitchSemi->load());
+            if (const auto* cached = pitchCache.lookup (semi))
+                voices.noteOn (note, vel, cached, s, e, snap, true, (float) semi);   // 遅延ゼロ・élastique品質
+            else
+            {
+                pitchCache.request (semi);                                           // 背景でレンダリング要求
+                voices.noteOn (note, vel, activeSample.load(), s, e, snap, true, 0.0f); // 一発目は Varispeed で綺麗に
+            }
+        }
+        else
+        {
+            voices.noteOn (note, vel, activeSample.load(), s, e, snap);
+        }
     }
     else if (msg.isNoteOff())
     {
@@ -232,6 +252,22 @@ juce::StringArray OtoMadSamplerProcessor::getReaperSubModeNames (int mode) const
         a.add (juce::String::fromUTF8 (sn));
     }
     return a;
+}
+
+void OtoMadSamplerProcessor::serviceCache()
+{
+    // 素材/モード/SR を反映（変わっていれば ready を無効化）
+    pitchCache.configure (activeSample.load(), sampleVersion.load(),
+                          (int) pReaperMode->load(), (int) pReaperSubMode->load(),
+                          hostSampleRate.load());
+
+    // 保留中の音程があれば背景スレッドでレンダリング（多重起動しない）
+    if (pitchCache.hasPending() && ! cacheJobRunning.exchange (true))
+        loadPool.addJob ([this]
+        {
+            while (pitchCache.renderPending()) {}
+            cacheJobRunning.store (false);
+        });
 }
 
 void OtoMadSamplerProcessor::reconfigureReaperMode()
