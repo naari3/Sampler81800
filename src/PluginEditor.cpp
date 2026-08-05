@@ -40,6 +40,7 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
     kStretch = &addKnob (P::stretchAmount, "Stretch", rotary);
     kFormant = &addKnob (P::formant,       "Formnt",  rotary);
+    kRMode   = &addKnob (P::reaperSubMode, "R.Mode",  rotary);
 
     cInterp = &addCombo (P::interpQuality, "Interp", { "Linear", "Hermite" });
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
@@ -70,6 +71,14 @@ void OtoMadSamplerEditor::timerCallback()
     auto& apvts = processor.getAPVTS();
     const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
     const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();
+
+    // REAPERシフタのモード(R.Mode)が変わったら安全に再設定＋レイテンシ再報告
+    const int rsm = (int) apvts.getRawParameterValue (P::reaperSubMode)->load();
+    if (rsm != lastReaperSubMode)
+    {
+        lastReaperSubMode = rsm;
+        processor.reconfigureReaperMode();
+    }
 
     juce::String msg;
     if (processor.isEngineFallbackActive())   // 未実装/非対応(REAPER非対応ホスト等) → 代替再生 (規約3)
@@ -177,11 +186,11 @@ void OtoMadSamplerEditor::resized()
         place (kPTime, cell (row, c)); place (kPCurve, cell (row, c - 1)); place (kGroup, cell (row, c - 2));
         placeCombo (cPMode, cell (row, c - 3)); placeCombo (cPShape, cell (row, c - 4)); placeCombo (cPoly, cell (row, c - 5));
     }
-    // row4: [Algo][Duration][Sync] Stretch Formant [CurveDisplay]
+    // row4: [Algo][Duration][Sync] Stretch Formant R.Mode [PhaseLock+CurveDisplay]
     {
-        auto row = grid; int c = 6;
+        auto row = grid; int c = 7;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
-        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
+        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4)); place (kRMode, cell (row, c - 5));
         auto last = row.reduced (4);
         phaseLockButton.setBounds (last.removeFromTop (22));
         curveDisplay.setBounds (last);

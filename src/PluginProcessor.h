@@ -77,6 +77,9 @@ public:
     // メッセージスレッドから呼ぶ。バックグラウンドで読み込み、完了後にアトミック公開。
     void loadSampleFromFile (const juce::File& file);
 
+    // REAPERシフタのモード変更を反映（メッセージスレッド, suspend下で再設定＋レイテンシ再報告）。
+    void reconfigureReaperMode();
+
 private:
     //==========================================================================
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;

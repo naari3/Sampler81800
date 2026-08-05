@@ -37,6 +37,7 @@ public:
     void setEngineControl (const Voice::EngineControl& c) noexcept { engineControl = c; }
     bool isFallbackActive() const noexcept { return voices[0].isFallbackActive(); }
     int  getCurrentLatency() const noexcept { return voices[0].getReportedLatency (engineControl.algorithm); }
+    void reconfigureReaper (int submode) { for (auto& v : voices) v.reconfigureReaper (submode); }
 
     void noteOn (int note, float velocity, const SampleBuffer* sample,
                  float sampleStart01, float sampleEnd01, bool snapZeroCross);

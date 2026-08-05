@@ -76,6 +76,9 @@ public:
     // 指定アルゴリズムを選んだ場合に報告すべきレイテンシ（pickEngine と整合）。
     int   getReportedLatency (int algorithm) const noexcept;
 
+    // REAPERシフタのモード再設定（非RT・suspend下でメッセージスレッドから呼ぶ）。
+    void  reconfigureReaper (int submode) { reaper.setSubMode (submode); reaper.reconfigure(); }
+
     void render (float* const* out, int numChannels, int n) noexcept;
 
 private:

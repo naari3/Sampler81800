@@ -207,6 +207,16 @@ void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
     });
 }
 
+void OtoMadSamplerProcessor::reconfigureReaperMode()
+{
+    const int sm = (int) pReaperSubMode->load();
+    suspendProcessing (true);          // オーディオコールバックを止めてから非RT処理
+    voices.reconfigureReaper (sm);
+    lastReportedLatency = voices.getCurrentLatency();
+    setLatencySamples (lastReportedLatency);
+    suspendProcessing (false);
+}
+
 void OtoMadSamplerProcessor::normalizeSample()
 {
     const auto* sb = activeSample.load();
