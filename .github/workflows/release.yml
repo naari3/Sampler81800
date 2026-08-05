@@ -16,7 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows-latest, macos-latest ]
+        # 当面 Windows のみ。macOS は REAPER SDK が WDL/swell を要求するため未対応（同梱後に追加予定）。
+        os: [ windows-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
