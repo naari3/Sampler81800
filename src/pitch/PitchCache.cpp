@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>   // ★診断ログ（実機検証用・後で削除）
 
 namespace otomad
 {
@@ -187,6 +188,18 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     const std::size_t avail = out.empty() ? 0 : out[0].size();
     const std::size_t start = std::min ((std::size_t) latency, avail);
     const std::size_t len   = avail - start;
+
+    // ★診断ログ（後で削除）: 出力のピークも見る（無音データかどうかの判定）
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numCh; ++ch)
+            for (float v : out[(std::size_t) ch]) peak = std::max (peak, std::abs (v));
+        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
+        f << "render semi=" << semi << " mode=" << mode << " sub=" << sub
+          << " shift=" << shift << " lat=" << latency
+          << " avail=" << avail << " len=" << len << " n=" << n
+          << " peak=" << peak << "\n";
+    }
     for (int ch = 0; ch < numCh; ++ch)
     {
         sb->data[(std::size_t) ch].assign (len, 0.0f);

@@ -45,7 +45,11 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
     pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
+
+    startTimerHz (6);   // UI非依存でキャッシュを駆動（窓を閉じても貯まる）
 }
+
+OtoMadSamplerProcessor::~OtoMadSamplerProcessor() { stopTimer(); }
 
 //==============================================================================
 void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)

@@ -23,11 +23,12 @@ namespace otomad { }
     §2.2 の MIDIサブブロック分割は Phase 0 から維持。
 */
 class OtoMadSamplerProcessor : public juce::AudioProcessor,
-                               public juce::VST3ClientExtensions
+                               public juce::VST3ClientExtensions,
+                               private juce::Timer
 {
 public:
     OtoMadSamplerProcessor();
-    ~OtoMadSamplerProcessor() override = default;
+    ~OtoMadSamplerProcessor() override;
 
     // VST3 経由で REAPER ホストAPIを取得する（§5.2）。メッセージスレッドで呼ばれる。
     juce::VST3ClientExtensions* getVST3ClientExtensions() override { return this; }
@@ -100,6 +101,8 @@ public:
 
 private:
     //==========================================================================
+    void timerCallback() override { serviceCache(); }   // UI非依存でキャッシュ駆動
+
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
     void handleMidiMessage (const juce::MidiMessage& msg) noexcept;
     void updateVoiceParams() noexcept;
