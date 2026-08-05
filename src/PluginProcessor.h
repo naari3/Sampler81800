@@ -90,6 +90,10 @@ public:
     // REAPERシフタのモード変更を反映（メッセージスレッド, suspend下で再設定＋レイテンシ再報告）。
     void reconfigureReaperMode();
 
+    // コンボボックス用: REAPER のモード名 / サブモード名を列挙（メッセージスレッド）。
+    juce::StringArray getReaperModeNames() const;
+    juce::StringArray getReaperSubModeNames (int mode) const;
+
 private:
     //==========================================================================
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;

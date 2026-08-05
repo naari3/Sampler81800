@@ -107,9 +107,16 @@ private:
     Knob* kStart = nullptr; Knob* kEnd = nullptr;
     Knob* kPTime = nullptr; Knob* kPCurve = nullptr; Knob* kGroup = nullptr;
     Knob* kMaxV = nullptr;  Knob* kBend = nullptr;
-    Knob* kStretch = nullptr; Knob* kFormant = nullptr; Knob* kRMode = nullptr; Knob* kRSub = nullptr;
+    Knob* kStretch = nullptr; Knob* kFormant = nullptr;
     Combo* cInterp = nullptr; Combo* cPMode = nullptr; Combo* cPShape = nullptr; Combo* cPoly = nullptr;
     Combo* cAlgo = nullptr; Combo* cDur = nullptr; Combo* cSync = nullptr;
+
+    // REAPER モード/サブモードは動的な名前リストなので手動管理のコンボにする
+    juce::ComboBox rModeBox, rSubBox;
+    juce::Label    rModeLbl, rSubLbl;
+    bool modePopulated = false;
+    int  subPopulatedForMode = -1;
+    void setIntParam (const juce::String& id, int value);
 
     int lastReaperMode = -1, lastReaperSubMode = -1;
     juce::Label statusLabel;

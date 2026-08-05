@@ -209,6 +209,31 @@ void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
     });
 }
 
+juce::StringArray OtoMadSamplerProcessor::getReaperModeNames() const
+{
+    juce::StringArray a;
+    auto fn = reinterpret_cast<bool (*) (int, const char**)> (reaperApi.getFunction ("EnumPitchShiftModes"));
+    if (fn == nullptr) return a;
+    const char* mn = nullptr;
+    for (int m = 0; m < 256 && fn (m, &mn); ++m)
+        a.add (mn ? juce::String::fromUTF8 (mn) : ("mode " + juce::String (m)));
+    return a;
+}
+
+juce::StringArray OtoMadSamplerProcessor::getReaperSubModeNames (int mode) const
+{
+    juce::StringArray a;
+    auto fn = reinterpret_cast<const char* (*) (int, int)> (reaperApi.getFunction ("EnumPitchShiftSubModes"));
+    if (fn == nullptr) return a;
+    for (int s = 0; s < 100000; ++s)
+    {
+        const char* sn = fn (mode, s);
+        if (sn == nullptr) break;
+        a.add (juce::String::fromUTF8 (sn));
+    }
+    return a;
+}
+
 void OtoMadSamplerProcessor::reconfigureReaperMode()
 {
     const int m  = (int) pReaperMode->load();

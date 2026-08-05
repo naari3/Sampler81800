@@ -40,8 +40,14 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
     kStretch = &addKnob (P::stretchAmount, "Stretch", rotary);
     kFormant = &addKnob (P::formant,       "Formnt",  rotary);
-    kRMode   = &addKnob (P::reaperMode,    "R.Mode",  rotary);
-    kRSub    = &addKnob (P::reaperSubMode, "R.Sub",   rotary);
+
+    // REAPER Mode / Sub は動的名リストのコンボ（アタッチメント無し・手動でパラメータへ）
+    rModeLbl.setText ("R.Mode", juce::dontSendNotification); rModeLbl.setJustificationType (juce::Justification::centred);
+    rSubLbl.setText  ("R.Sub",  juce::dontSendNotification); rSubLbl.setJustificationType  (juce::Justification::centred);
+    addAndMakeVisible (rModeLbl); addAndMakeVisible (rSubLbl);
+    addAndMakeVisible (rModeBox); addAndMakeVisible (rSubBox);
+    rModeBox.onChange = [this] { if (rModeBox.getSelectedId() > 0) setIntParam (P::reaperMode,    rModeBox.getSelectedId() - 1); };
+    rSubBox.onChange  = [this] { if (rSubBox.getSelectedId()  > 0) setIntParam (P::reaperSubMode, rSubBox.getSelectedId()  - 1); };
 
     cInterp = &addCombo (P::interpQuality, "Interp", { "Linear", "Hermite" });
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
@@ -72,21 +78,59 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
 
 OtoMadSamplerEditor::~OtoMadSamplerEditor() { stopTimer(); }
 
+void OtoMadSamplerEditor::setIntParam (const juce::String& id, int value)
+{
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (processor.getAPVTS().getParameter (id)))
+        *p = value;
+}
+
 void OtoMadSamplerEditor::timerCallback()
 {
     auto& apvts = processor.getAPVTS();
     const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
     const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();
 
-    // REAPERシフタの Mode / Sub が変わったら安全に再設定＋レイテンシ再報告
+    // モード名コンボを一度だけ埋める（REAPER利用可時）
+    if (processor.isReaperAvailable() && ! modePopulated)
+    {
+        const auto names = processor.getReaperModeNames();
+        rModeBox.clear (juce::dontSendNotification);
+        for (int i = 0; i < names.size(); ++i)
+            rModeBox.addItem (names[i].isEmpty() ? ("mode " + juce::String (i)) : names[i], i + 1);
+        modePopulated = names.size() > 0;
+    }
+
     const int rm  = (int) apvts.getRawParameterValue (P::reaperMode)->load();
     const int rsm = (int) apvts.getRawParameterValue (P::reaperSubMode)->load();
+
+    // モードが変わったらサブモード名コンボを詰め直す
+    if (processor.isReaperAvailable() && rm != subPopulatedForMode)
+    {
+        subPopulatedForMode = rm;
+        const auto subs = processor.getReaperSubModeNames (rm);
+        rSubBox.clear (juce::dontSendNotification);
+        for (int i = 0; i < subs.size(); ++i)
+            rSubBox.addItem (subs[i].isEmpty() ? ("sub " + juce::String (i)) : subs[i], i + 1);
+    }
+
+    // 現在のパラメータ値をコンボ選択に反映（onChangeを起こさない）
+    if (rModeBox.getSelectedId() != rm + 1)
+        rModeBox.setSelectedId (rm + 1, juce::dontSendNotification);
+    if (rSubBox.getNumItems() > 0)
+    {
+        const int subId = juce::jlimit (1, rSubBox.getNumItems(), rsm + 1);
+        if (rSubBox.getSelectedId() != subId)
+            rSubBox.setSelectedId (subId, juce::dontSendNotification);
+    }
+
+    // Mode / Sub が変わったら安全に再設定＋レイテンシ再報告
     if (rm != lastReaperMode || rsm != lastReaperSubMode)
     {
         lastReaperMode = rm;
         lastReaperSubMode = rsm;
         processor.reconfigureReaperMode();
     }
+
     // 現在の REAPER モード名/レイテンシを表示（REAPER Shifter 選択時のみ）
     reaperModeLabel.setText (algo == 5 ? processor.getReaperModeText() : juce::String(),
                              juce::dontSendNotification);
@@ -198,12 +242,18 @@ void OtoMadSamplerEditor::resized()
         place (kPTime, cell (row, c)); place (kPCurve, cell (row, c - 1)); place (kGroup, cell (row, c - 2));
         placeCombo (cPMode, cell (row, c - 3)); placeCombo (cPShape, cell (row, c - 4)); placeCombo (cPoly, cell (row, c - 5));
     }
-    // row4: [Algo][Duration][Sync] Stretch Formant R.Mode R.Sub [PhaseLock+CurveDisplay]
+    // row4: [Algo][Duration][Sync] Stretch Formant [R.Mode combo][R.Sub combo] [PhaseLock+CurveDisplay]
     {
         auto row = grid; int c = 8;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
         place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
-        place (kRMode, cell (row, c - 5)); place (kRSub, cell (row, c - 6));
+        auto placeRawCombo = [] (juce::Label& lbl, juce::ComboBox& box, juce::Rectangle<int> a)
+        {
+            lbl.setBounds (a.removeFromTop (15));
+            box.setBounds (a.removeFromTop (24));
+        };
+        placeRawCombo (rModeLbl, rModeBox, cell (row, c - 5));
+        placeRawCombo (rSubLbl,  rSubBox,  cell (row, c - 6));
         auto last = row.reduced (4);
         phaseLockButton.setBounds (last.removeFromTop (22));
         curveDisplay.setBounds (last);
