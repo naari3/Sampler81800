@@ -60,6 +60,10 @@ target_sources(OtoMadSampler PRIVATE
 
 target_include_directories(OtoMadSampler PRIVATE src)
 
+# ロゴ等の埋め込みリソース → BinaryData::logo_png
+juce_add_binary_data(OtoMadSamplerAssets SOURCES resources/logo.png)
+target_link_libraries(OtoMadSampler PRIVATE OtoMadSamplerAssets)
+
 target_compile_features(OtoMadSampler PRIVATE cxx_std_20)
 
 # ソースは UTF-8。MSVC は既定でシステムコードページ(日本語環境ではCP932)として解釈し、

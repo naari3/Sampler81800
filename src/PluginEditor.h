@@ -121,6 +121,7 @@ private:
     int lastReaperMode = -1, lastReaperSubMode = -1;
     juce::Label statusLabel;
     juce::Label reaperModeLabel;
+    juce::Image logo;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerEditor)
 };

@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "BinaryData.h"
 
 namespace P = otomad::params;
 
@@ -72,8 +73,10 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     reaperModeLabel.setFont (juce::FontOptions (12.0f));
     addAndMakeVisible (reaperModeLabel);
 
+    logo = juce::ImageCache::getFromMemory (BinaryData::logo_png, BinaryData::logo_pngSize);
+
     startTimerHz (8);
-    setSize (860, 620);
+    setSize (860, 648);
 }
 
 OtoMadSamplerEditor::~OtoMadSamplerEditor() { stopTimer(); }
@@ -181,10 +184,18 @@ OtoMadSamplerEditor::Combo& OtoMadSamplerEditor::addCombo (const juce::String& p
 void OtoMadSamplerEditor::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff1b1b1f));
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
-    g.drawText ("OtoMadSampler", getLocalBounds().removeFromTop (26).withTrimmedLeft (10),
-                juce::Justification::centredLeft, false);
+
+    auto header = getLocalBounds().removeFromTop (54).reduced (8, 4);
+    if (logo.isValid())
+        g.drawImageWithin (logo, header.getX(), header.getY(), header.getWidth(), header.getHeight(),
+                           juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid
+                             | juce::RectanglePlacement::onlyReduceInSize);
+    else
+    {
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (18.0f, juce::Font::bold));
+        g.drawText ("OtoMadSampler", header, juce::Justification::centredLeft, false);
+    }
 }
 
 //==============================================================================
@@ -202,7 +213,7 @@ void OtoMadSamplerEditor::resized()
     };
 
     auto r = getLocalBounds();
-    r.removeFromTop (28);
+    r.removeFromTop (54);   // ロゴヘッダ
 
     auto waveArea = r.removeFromTop (124).reduced (8, 4);
     waveform.setBounds (waveArea);
