@@ -25,27 +25,37 @@ using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int version);
 using EnumModes_t    = bool (*) (int mode, const char** nameOut);
 using EnumSubModes_t = const char* (*) (int mode, int submode);
 
-// 無音を流し、最初の出力が出るまでに供給したフレーム数＝レイテンシを実測する。
+// インパルス（頭に1発）を入れ、出力に現れる位置＝出力遅延を実測する。
+// 無音方式だと Soloist 等のピッチ追従型で過大評価するため。応答が無ければ 0。
 static int probeLatencyOf (IReaperPitchShift* ps, int numCh, double sr) noexcept
 {
     ps->Reset();
     const int probeChunk = 256;
     std::vector<double> tmp ((std::size_t) probeChunk * (std::size_t) numCh, 0.0);
-    int fed = 0, lat = 0;
-    for (int g = 0; g < 4096; ++g)
+    bool impulseFed = false;
+    long outCount = 0, lat = 0;
+    for (int g = 0; g < 8192; ++g)
     {
         if (ReaSample* buf = ps->GetBuffer (probeChunk))
         {
             std::memset (buf, 0, sizeof (ReaSample) * (std::size_t) probeChunk * (std::size_t) numCh);
+            if (! impulseFed) { for (int ch = 0; ch < numCh; ++ch) buf[(std::size_t) ch] = 1.0; impulseFed = true; }
             ps->BufferDone (probeChunk);
-            fed += probeChunk;
         }
-        if (ps->GetSamples (probeChunk, tmp.data()) > 0) break;
-        lat = fed;
-        if (fed > 2 * (int) sr) break;
+        const int got = ps->GetSamples (probeChunk, tmp.data());
+        int hit = -1;
+        for (int i = 0; i < got; ++i)
+        {
+            double mx = 0.0;
+            for (int ch = 0; ch < numCh; ++ch) mx = std::max (mx, std::abs (tmp[(std::size_t) (i * numCh + ch)]));
+            if (mx > 0.0005) { hit = i; break; }
+        }
+        if (hit >= 0) { lat = outCount + hit; break; }
+        outCount += got;
+        if (outCount > 2 * (long) sr) break;
     }
     ps->Reset();
-    return lat;
+    return (int) lat;
 }
 
 ReaperPitchShiftEngine::~ReaperPitchShiftEngine() { destroyShifter(); }

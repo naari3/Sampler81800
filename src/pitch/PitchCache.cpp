@@ -105,19 +105,34 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedVersio
     ps->SetQualityParameter ((mode << 16) + sub);
     ps->Reset();
 
-    // 先頭のレイテンシ量を実測（無音を流す）→ 出力の頭をこの分だけ捨てて整列
+    // 先頭のレイテンシを**インパルス**で実測（頭に1発入れ、出力に現れる位置＝出力遅延）。
+    // 無音方式だと Soloist 等のピッチ追従型で過大評価しアタックを削るため。応答が無ければ 0（頭を捨てない=安全側）。
     int latency = 0;
     {
+        ps->Reset();
         const int probe = 256;
         std::vector<double> tmp ((std::size_t) probe * (std::size_t) numCh, 0.0);
-        int fed = 0;
-        for (int g = 0; g < 4096; ++g)
+        bool impulseFed = false;
+        long outCount = 0;
+        for (int g = 0; g < 8192; ++g)
         {
             if (ReaSample* b = ps->GetBuffer (probe))
-            { std::memset (b, 0, sizeof (ReaSample) * (std::size_t) probe * (std::size_t) numCh); ps->BufferDone (probe); fed += probe; }
-            if (ps->GetSamples (probe, tmp.data()) > 0) break;
-            latency = fed;
-            if (fed > 4 * (int) sr) break;
+            {
+                std::memset (b, 0, sizeof (ReaSample) * (std::size_t) probe * (std::size_t) numCh);
+                if (! impulseFed) { for (int ch = 0; ch < numCh; ++ch) b[(std::size_t) ch] = 1.0; impulseFed = true; }
+                ps->BufferDone (probe);
+            }
+            const int got = ps->GetSamples (probe, tmp.data());
+            int hit = -1;
+            for (int i = 0; i < got; ++i)
+            {
+                double mx = 0.0;
+                for (int ch = 0; ch < numCh; ++ch) mx = std::max (mx, std::abs (tmp[(std::size_t) (i * numCh + ch)]));
+                if (mx > 0.0005) { hit = i; break; }
+            }
+            if (hit >= 0) { latency = (int) (outCount + hit); break; }
+            outCount += got;
+            if (outCount > 2 * (long) sr) break;
         }
         ps->Reset();
     }
