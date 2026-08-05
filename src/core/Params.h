@@ -34,6 +34,7 @@ inline constexpr const char* durationMode  = "durationMode";
 inline constexpr const char* syncLength    = "syncLength";
 inline constexpr const char* stretchAmount = "stretchAmount";
 inline constexpr const char* formant       = "formant";
+inline constexpr const char* reaperMode    = "reaperMode";
 inline constexpr const char* reaperSubMode = "reaperSubMode";
 inline constexpr const char* phaseLock     = "phaseLock";
 
@@ -93,7 +94,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                     NormalisableRange<float> (0.25f, 4.0f, 0.01f, 0.5f), 1.0f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { formant, 1 }, "Formant",
                     NormalisableRange<float> (-12.0f, 12.0f, 0.1f), 0.0f));
-    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 31, 0));
+    // REAPER ピッチモードを2段階で選ぶ: Mode(トップレベル) と Sub(その中のサブモード)。
+    // 選択時にその組合せのレイテンシを実測してエンベロープ遅延/PDCが追従する。
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperMode, 1 },    "REAPER Mode",    0, 127,   0));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 32767, 0));
     layout.add (std::make_unique<AudioParameterBool>  (ParameterID { phaseLock, 1 }, "Phase Lock", true));
 
     return layout;

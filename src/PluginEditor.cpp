@@ -40,7 +40,8 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
     kStretch = &addKnob (P::stretchAmount, "Stretch", rotary);
     kFormant = &addKnob (P::formant,       "Formnt",  rotary);
-    kRMode   = &addKnob (P::reaperSubMode, "R.Mode",  rotary);
+    kRMode   = &addKnob (P::reaperMode,    "R.Mode",  rotary);
+    kRSub    = &addKnob (P::reaperSubMode, "R.Sub",   rotary);
 
     cInterp = &addCombo (P::interpQuality, "Interp", { "Linear", "Hermite" });
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
@@ -60,6 +61,11 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::orange);
     addAndMakeVisible (statusLabel);
 
+    reaperModeLabel.setJustificationType (juce::Justification::centredLeft);
+    reaperModeLabel.setColour (juce::Label::textColourId, juce::Colours::aqua);
+    reaperModeLabel.setFont (juce::FontOptions (12.0f));
+    addAndMakeVisible (reaperModeLabel);
+
     startTimerHz (8);
     setSize (860, 620);
 }
@@ -72,13 +78,18 @@ void OtoMadSamplerEditor::timerCallback()
     const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
     const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();
 
-    // REAPERシフタのモード(R.Mode)が変わったら安全に再設定＋レイテンシ再報告
+    // REAPERシフタの Mode / Sub が変わったら安全に再設定＋レイテンシ再報告
+    const int rm  = (int) apvts.getRawParameterValue (P::reaperMode)->load();
     const int rsm = (int) apvts.getRawParameterValue (P::reaperSubMode)->load();
-    if (rsm != lastReaperSubMode)
+    if (rm != lastReaperMode || rsm != lastReaperSubMode)
     {
+        lastReaperMode = rm;
         lastReaperSubMode = rsm;
         processor.reconfigureReaperMode();
     }
+    // 現在の REAPER モード名/レイテンシを表示（REAPER Shifter 選択時のみ）
+    reaperModeLabel.setText (algo == 5 ? processor.getReaperModeText() : juce::String(),
+                             juce::dontSendNotification);
 
     juce::String msg;
     if (processor.isEngineFallbackActive())   // 未実装/非対応(REAPER非対応ホスト等) → 代替再生 (規約3)
@@ -159,7 +170,8 @@ void OtoMadSamplerEditor::resized()
     kEnd->slider.setBounds (trimRow);
 
     keyboard.setBounds (r.removeFromBottom (68).reduced (8, 4));
-    statusLabel.setBounds (r.removeFromBottom (22).reduced (10, 0));
+    reaperModeLabel.setBounds (r.removeFromBottom (18).reduced (10, 0));
+    statusLabel.setBounds (r.removeFromBottom (20).reduced (10, 0));
 
     auto grid = r.reduced (8, 4);
     const int rowH = grid.getHeight() / 4;
@@ -186,11 +198,12 @@ void OtoMadSamplerEditor::resized()
         place (kPTime, cell (row, c)); place (kPCurve, cell (row, c - 1)); place (kGroup, cell (row, c - 2));
         placeCombo (cPMode, cell (row, c - 3)); placeCombo (cPShape, cell (row, c - 4)); placeCombo (cPoly, cell (row, c - 5));
     }
-    // row4: [Algo][Duration][Sync] Stretch Formant R.Mode [PhaseLock+CurveDisplay]
+    // row4: [Algo][Duration][Sync] Stretch Formant R.Mode R.Sub [PhaseLock+CurveDisplay]
     {
-        auto row = grid; int c = 7;
+        auto row = grid; int c = 8;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
-        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4)); place (kRMode, cell (row, c - 5));
+        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
+        place (kRMode, cell (row, c - 5)); place (kRSub, cell (row, c - 6));
         auto last = row.reduced (4);
         phaseLockButton.setBounds (last.removeFromTop (22));
         curveDisplay.setBounds (last);

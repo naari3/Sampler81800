@@ -69,6 +69,16 @@ public:
     bool isEngineFallbackActive() const noexcept { return voices.isFallbackActive(); }
     bool isReaperAvailable() const noexcept { return reaperApi.isAvailable(); }
 
+    // GUI表示用: 現在の REAPER モード名/サブモード名/レイテンシ/個数
+    juce::String getReaperModeText() const
+    {
+        return juce::String (voices.getReaperModeName().c_str()) + " / "
+             + juce::String (voices.getReaperSubModeName().c_str())
+             + "  (lat=" + juce::String (voices.getReaperLatency())
+             + ", modes=" + juce::String (voices.getReaperModeCount())
+             + ", subs=" + juce::String (voices.getReaperSubModeCount()) + ")";
+    }
+
     // ノーマライズ: 現在のサンプルのピークから正規化ゲインを算出（メッセージスレッド）。
     void  normalizeSample();
     void  resetNormalize() noexcept { normGain.store (1.0f); }
@@ -132,6 +142,7 @@ private:
     std::atomic<float>* pStretch     = nullptr;
     std::atomic<float>* pFormant     = nullptr;
     std::atomic<float>* pPhaseLock   = nullptr;
+    std::atomic<float>* pReaperMode    = nullptr;
     std::atomic<float>* pReaperSubMode = nullptr;
 
     double hostBpm = 120.0;

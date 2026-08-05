@@ -46,6 +46,7 @@ public:
         bool  hostBpmValid  = false;
         float formantSemi   = 0.0f;
         bool  phaseLock     = true;
+        int   reaperMode    = 0;
         int   reaperSubMode = 0;
     };
 
@@ -77,7 +78,15 @@ public:
     int   getReportedLatency (int algorithm) const noexcept;
 
     // REAPERシフタのモード再設定（非RT・suspend下でメッセージスレッドから呼ぶ）。
-    void  reconfigureReaper (int submode) { reaper.setSubMode (submode); reaper.reconfigure(); }
+    void  reconfigureReaper (int mode, int submode)
+    { reaper.setMode (mode); reaper.setSubMode (submode); reaper.reconfigure(); }
+
+    // GUI表示用（メッセージスレッドからのみ）
+    const std::string& getReaperModeName() const noexcept    { return reaper.getModeName(); }
+    const std::string& getReaperSubModeName() const noexcept { return reaper.getSubModeName(); }
+    int  getReaperModeCount() const noexcept    { return reaper.getModeCount(); }
+    int  getReaperSubModeCount() const noexcept { return reaper.getSubModeCount(); }
+    int  getReaperLatency() const noexcept      { return reaper.getIntrinsicLatency(); }
 
     void render (float* const* out, int numChannels, int n) noexcept;
 

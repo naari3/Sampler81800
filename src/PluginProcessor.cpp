@@ -42,6 +42,7 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pStretch     = apvts.getRawParameterValue (otomad::params::stretchAmount);
     pFormant     = apvts.getRawParameterValue (otomad::params::formant);
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
+    pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
 }
 
@@ -98,6 +99,7 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     ec.hostBpmValid = hostBpmValid;
     ec.formantSemi  = pFormant->load();
     ec.phaseLock    = pPhaseLock->load() > 0.5f;
+    ec.reaperMode    = (int) pReaperMode->load();
     ec.reaperSubMode = (int) pReaperSubMode->load();
     voices.setEngineControl (ec);
 }
@@ -209,9 +211,10 @@ void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
 
 void OtoMadSamplerProcessor::reconfigureReaperMode()
 {
+    const int m  = (int) pReaperMode->load();
     const int sm = (int) pReaperSubMode->load();
     suspendProcessing (true);          // オーディオコールバックを止めてから非RT処理
-    voices.reconfigureReaper (sm);
+    voices.reconfigureReaper (m, sm);
     lastReportedLatency = voices.getCurrentLatency();
     setLatencySamples (lastReportedLatency);
     suspendProcessing (false);

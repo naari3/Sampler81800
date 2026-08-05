@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include "pitch/IPitchEngine.h"
 
@@ -21,8 +22,15 @@ public:
     ~ReaperPitchShiftEngine() override;
 
     void setReaperApi (host::ReaperApi* a) noexcept { api = a; }
-    void setSubMode (int m) noexcept { subMode = m; }
-    void reconfigure();   // 現在の subMode を適用＋レイテンシ再実測（非RT・suspend下で呼ぶ）
+    void setMode (int m) noexcept    { modeSel = m; }
+    void setSubMode (int s) noexcept { subSel = s; }
+    void reconfigure();   // 現在の mode/sub を適用＋レイテンシ再実測（非RT・suspend下で呼ぶ）
+
+    // GUI表示用（メッセージスレッドからのみ読む）
+    int         getModeCount() const noexcept    { return numModes; }
+    int         getSubModeCount() const noexcept { return numSubs; }
+    const std::string& getModeName() const noexcept    { return modeName; }
+    const std::string& getSubModeName() const noexcept { return subName; }
 
     void prepare (const PitchEngineContext&, EngineResources&) override;
     void reset() override;
@@ -38,12 +46,13 @@ public:
 
 private:
     void destroyShifter() noexcept;
-    void buildModeList();              // EnumPitchShiftModes/SubModes → modeEncodings
-    void applyMode (int flatIndex);    // SetQualityParameter + そのモードのレイテンシ実測
+    void applyMode();   // (mode<<16)+sub を SetQualityParameter + レイテンシ実測 + 名前解決
 
     host::ReaperApi* api = nullptr;
     void*  pitchShift = nullptr;   // 不透明 reaper::IReaperPitchShift*
-    int    subMode = 0;
+    int    modeSel = 0, subSel = 0;
+    int    numModes = 0, numSubs = 0;   // 総モード数 / 現在モードのサブモード数
+    std::string modeName, subName;
     int    latency = 0;
     double sampleRate = 48000.0;
     int    maxBlock = 512;
@@ -51,7 +60,6 @@ private:
     double lastShift = -1.0;
     double lastTempo = -1.0;
 
-    std::vector<int>    modeEncodings;   // フラットindex → (mode<<16)+submode
     std::vector<double> pullScratch;     // GetSamples 出力（interleaved double）
 
     // 出力FIFO: élastique のフレーム粒度でブロック内の過不足が出るのを吸収（ぷつぷつ防止）

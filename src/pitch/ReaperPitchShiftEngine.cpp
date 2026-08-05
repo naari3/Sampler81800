@@ -51,80 +51,55 @@ static int probeLatencyOf (IReaperPitchShift* ps, int numCh, double sr) noexcept
 
 ReaperPitchShiftEngine::~ReaperPitchShiftEngine() { destroyShifter(); }
 
-void ReaperPitchShiftEngine::buildModeList()
+// (mode<<16)+sub を適用。選択中モードのサブモード数・名前を解決し、そのレイテンシを実測する。
+void ReaperPitchShiftEngine::applyMode()
 {
-    modeEncodings.clear();
-    if (api == nullptr)
+    auto* ps = static_cast<IReaperPitchShift*> (pitchShift);
+    if (ps == nullptr || api == nullptr)
         return;
+
     auto enumModes = reinterpret_cast<EnumModes_t>    (api->getFunction ("EnumPitchShiftModes"));
     auto enumSub   = reinterpret_cast<EnumSubModes_t> (api->getFunction ("EnumPitchShiftSubModes"));
-    if (enumModes == nullptr)
-        return;
 
-    // 一度だけ、全モードのレイテンシを実測してログ（どれが低遅延か一覧化）
-    static std::atomic<bool> logged { false };
-    const bool doLog = ! logged.exchange (true);
-    std::ofstream f;
-    if (doLog)
+    // 総モード数
+    numModes = 0;
+    if (enumModes != nullptr)
     {
-        f.open ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
-        f << "--- REAPER pitch modes (index : name : latency) ---\n";
+        const char* mn = nullptr;
+        for (int m = 0; m < 256 && enumModes (m, &mn); ++m) ++numModes;
     }
-    auto* ps = static_cast<IReaperPitchShift*> (pitchShift);
+    const int mode = numModes > 0 ? std::clamp (modeSel, 0, numModes - 1) : 0;
 
-    const char* mn = nullptr;
-    int idx = 0;
-    for (int mode = 0; enumModes (mode, &mn); ++mode)
-    {
-        const std::string mname = mn ? mn : "?";
-        if (enumSub != nullptr)
-        {
-            for (int sm = 0; ; ++sm)
-            {
-                const char* sn = enumSub (mode, sm);
-                if (sn == nullptr) break;
-                const int enc = (mode << 16) + sm;
-                modeEncodings.push_back (enc);
-                if (doLog && ps != nullptr)
-                {
-                    ps->SetQualityParameter (enc);
-                    f << idx << " : " << mname << " / " << sn
-                      << " : lat=" << probeLatencyOf (ps, numCh, sampleRate) << "\n";
-                }
-                ++idx;
-            }
-        }
-        else
-        {
-            const int enc = (mode << 16);
-            modeEncodings.push_back (enc);
-            if (doLog && ps != nullptr)
-                f << idx << " : " << mname
-                  << " : lat=" << probeLatencyOf (ps, numCh, sampleRate) << "\n";
-            ++idx;
-        }
-    }
-    if (doLog)
-        f << "--- set 'R.Mode' param to the index above (低い lat が低遅延) ---\n";
-}
+    // そのモードのサブモード数
+    numSubs = 0;
+    if (enumSub != nullptr)
+        for (int s = 0; s < 100000; ++s) { if (enumSub (mode, s) == nullptr) break; ++numSubs; }
+    const int sub = numSubs > 0 ? std::clamp (subSel, 0, numSubs - 1) : 0;
 
-void ReaperPitchShiftEngine::applyMode (int flatIndex)
-{
-    auto* ps = static_cast<IReaperPitchShift*> (pitchShift);
-    if (ps == nullptr)
-        return;
-    const int enc = (flatIndex >= 0 && flatIndex < (int) modeEncodings.size())
-                        ? modeEncodings[(std::size_t) flatIndex] : -1;   // -1 = プロジェクト既定
+    // 名前解決
+    modeName.clear(); subName.clear();
+    if (enumModes != nullptr) { const char* mn = nullptr; if (enumModes (mode, &mn) && mn) modeName = mn; }
+    if (enumSub   != nullptr) { const char* sn = enumSub (mode, sub); if (sn) subName = sn; }
+    if (modeName.empty()) modeName = "mode" + std::to_string (mode);
+
+    const int enc = (mode << 16) + sub;
     ps->SetQualityParameter (enc);
     latency = probeLatencyOf (ps, numCh, sampleRate);
     lastShift = -1.0;
     lastTempo = -1.0;
+
+    // ★選択中モードの確認ログ（実機検証用・後で削除）
+    {
+        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
+        f << "apply: mode=" << mode << "(" << modeName << ") sub=" << sub << "(" << subName << ")"
+          << " numModes=" << numModes << " numSubs=" << numSubs << " lat=" << latency << "\n";
+    }
 }
 
 void ReaperPitchShiftEngine::reconfigure()
 {
     if (pitchShift != nullptr)
-        applyMode (subMode);
+        applyMode();
 }
 
 void ReaperPitchShiftEngine::destroyShifter() noexcept
@@ -168,8 +143,7 @@ void ReaperPitchShiftEngine::prepare (const PitchEngineContext& ctx, EngineResou
     ps->Reset();
     pitchShift = ps;
 
-    buildModeList();     // モード一覧を構築（初回のみ全モードのレイテンシをログ）
-    applyMode (subMode); // 選択モードを適用＋レイテンシ実測
+    applyMode();   // 現在の mode/sub を適用＋そのレイテンシを実測
 }
 
 void ReaperPitchShiftEngine::reset()

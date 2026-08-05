@@ -70,6 +70,7 @@ IPitchEngine* Voice::pickEngine (int algorithm) noexcept
 void Voice::setEngineControl (const EngineControl& c) noexcept
 {
     control = c;
+    reaper.setMode (c.reaperMode);
     reaper.setSubMode (c.reaperSubMode);
     activeEngine = pickEngine (c.algorithm);
     phaseVocoder.setPhaseLock (c.phaseLock);
