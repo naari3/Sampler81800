@@ -108,45 +108,16 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     ps->SetQualityParameter ((mode << 16) + sub);
     ps->Reset();
 
-    // 先頭のレイテンシを**インパルス**で実測（頭に1発入れ、出力に現れる位置＝出力遅延）。
-    // 無音方式だと Soloist 等のピッチ追従型で過大評価しアタックを削るため。応答が無ければ 0（頭を捨てない=安全側）。
-    int latency = 0;
-    {
-        ps->Reset();
-        const int probe = 256;
-        std::vector<double> tmp ((std::size_t) probe * (std::size_t) numCh, 0.0);
-        bool impulseFed = false;
-        long outCount = 0;
-        for (int g = 0; g < 8192; ++g)
-        {
-            if (ReaSample* b = ps->GetBuffer (probe))
-            {
-                std::memset (b, 0, sizeof (ReaSample) * (std::size_t) probe * (std::size_t) numCh);
-                if (! impulseFed) { for (int ch = 0; ch < numCh; ++ch) b[(std::size_t) ch] = 1.0; impulseFed = true; }
-                ps->BufferDone (probe);
-            }
-            const int got = ps->GetSamples (probe, tmp.data());
-            int hit = -1;
-            for (int i = 0; i < got; ++i)
-            {
-                double mx = 0.0;
-                for (int ch = 0; ch < numCh; ++ch) mx = std::max (mx, std::abs (tmp[(std::size_t) (i * numCh + ch)]));
-                if (mx > 0.0005) { hit = i; break; }
-            }
-            if (hit >= 0) { latency = (int) (outCount + hit); break; }
-            outCount += got;
-            if (outCount > 2 * (long) sr) break;
-        }
-        ps->Reset();
-    }
-
-    // 本レンダリング: 全入力を供給 → Flush → 全出力を回収
+    // --- オフライン・レンダリング（プローブ非依存の堅牢版）---
     const std::int64_t n = src->numSamples;
-    std::vector<std::vector<float>> out ((std::size_t) numCh);
-    for (auto& c : out) c.reserve ((std::size_t) (n + latency + 4096));
+    // 目標出力長（Manualストレッチ等で長さが変わる）。set_tempo(timeRatio) → 出力 ≈ n / timeRatio。
+    const std::int64_t expectedLen = timeRatio > 1.0e-6
+        ? (std::int64_t) std::llround ((double) n / timeRatio) : n;
 
     const int chunk = 1024;
     std::vector<double> pull ((std::size_t) chunk * (std::size_t) numCh, 0.0);
+    std::vector<std::vector<float>> out ((std::size_t) numCh);
+    for (auto& c : out) c.reserve ((std::size_t) (expectedLen + 2 * (std::int64_t) sr));
 
     auto drain = [&]()
     {
@@ -159,9 +130,10 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
                     out[(std::size_t) ch].push_back ((float) pull[(std::size_t) (i * numCh + ch)]);
         }
     };
+    auto outLen = [&]() -> std::int64_t { return out.empty() ? 0 : (std::int64_t) out[0].size(); };
 
-    std::int64_t pos = 0;
-    while (pos < n)
+    // 1) 実入力を供給
+    for (std::int64_t pos = 0; pos < n; pos += chunk)
     {
         const int c = (int) std::min<std::int64_t> (chunk, n - pos);
         if (ReaSample* b = ps->GetBuffer (c))
@@ -171,42 +143,62 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
                     b[(std::size_t) (i * numCh + ch)] = (ReaSample) src->sampleAtRaw (ch, pos + i);
             ps->BufferDone (c);
         }
-        pos += c;
         drain();
+    }
+
+    // 2) 内部に溜まった本体を無音で押し出す（大レイテンシモード対策）。十分な長さになるまで、
+    //    または出力がこれ以上増えなくなるまで。
+    const std::int64_t maxLead = (std::int64_t) (0.3 * sr);            // 先頭で除去する上限
+    const std::int64_t target  = expectedLen + maxLead + (std::int64_t) (0.5 * sr);
+    for (int g = 0; g < 200000 && outLen() < target; ++g)
+    {
+        if (ReaSample* b = ps->GetBuffer (chunk))
+        {
+            std::memset (b, 0, sizeof (ReaSample) * (std::size_t) chunk * (std::size_t) numCh);
+            ps->BufferDone (chunk);
+        }
+        const std::int64_t before = outLen();
+        drain();
+        if (outLen() == before) break;   // これ以上出ないなら終了
     }
     ps->FlushSamples();
     drain();
     delete ps;
 
-    // 頭の latency 分を捨てて素材と整列。長さは実際の出力長（ストレッチで変わる）。
+    // 3) 実音のオンセット（頭）を自動検出して整列（先頭の遅延/無音を除去, 上限 maxLead）
+    const std::int64_t avail = outLen();
+    float peak = 0.0f;
+    for (int ch = 0; ch < numCh; ++ch)
+        for (float v : out[(std::size_t) ch]) peak = std::max (peak, std::abs (v));
+
+    const float onsetThr = std::max (0.0005f, peak * 0.02f);
+    std::int64_t onset = 0;
+    for (std::int64_t i = 0, lim = std::min (avail, maxLead); i < lim; ++i)
+    {
+        float mx = 0.0f;
+        for (int ch = 0; ch < numCh; ++ch) mx = std::max (mx, std::abs (out[(std::size_t) ch][(std::size_t) i]));
+        if (mx > onsetThr) { onset = i; break; }
+    }
+    const std::int64_t len = std::max<std::int64_t> (0, std::min (expectedLen, avail - onset));
+
+    // ★診断ログ（後で削除）
+    {
+        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
+        f << "render semi=" << semi << " mode=" << mode << " sub=" << sub
+          << " shift=" << shift << " onset=" << onset << " avail=" << avail
+          << " expLen=" << expectedLen << " len=" << len << " n=" << n << " peak=" << peak << "\n";
+    }
+
     auto sb = std::make_shared<SampleBuffer>();
     sb->numChannels        = numCh;
     sb->sampleRate         = sr;
     sb->originalSampleRate = sr;
     sb->name               = src->name + "_shift";
-    sb->data.assign ((std::size_t) numCh, {});
-    const std::size_t avail = out.empty() ? 0 : out[0].size();
-    const std::size_t start = std::min ((std::size_t) latency, avail);
-    const std::size_t len   = avail - start;
-
-    // ★診断ログ（後で削除）: 出力のピークも見る（無音データかどうかの判定）
-    {
-        float peak = 0.0f;
-        for (int ch = 0; ch < numCh; ++ch)
-            for (float v : out[(std::size_t) ch]) peak = std::max (peak, std::abs (v));
-        std::ofstream f ("C:/Users/biboo/otomad_reaper_dbg.txt", std::ios::app);
-        f << "render semi=" << semi << " mode=" << mode << " sub=" << sub
-          << " shift=" << shift << " lat=" << latency
-          << " avail=" << avail << " len=" << len << " n=" << n
-          << " peak=" << peak << "\n";
-    }
+    sb->data.assign ((std::size_t) numCh, std::vector<float> ((std::size_t) len, 0.0f));
     for (int ch = 0; ch < numCh; ++ch)
-    {
-        sb->data[(std::size_t) ch].assign (len, 0.0f);
-        for (std::size_t i = 0; i < len; ++i)
-            sb->data[(std::size_t) ch][i] = out[(std::size_t) ch][start + i];
-    }
-    sb->numSamples = (std::int64_t) len;
+        for (std::int64_t i = 0; i < len; ++i)
+            sb->data[(std::size_t) ch][(std::size_t) i] = out[(std::size_t) ch][(std::size_t) (onset + i)];
+    sb->numSamples = len;
     return sb;
 }
 
