@@ -9,6 +9,7 @@ namespace otomad::params
 // 規約10/12: 個数・レンジ・選択肢はホストによって変えない。以降のフェーズで追加はするが縮小はしない。
 inline constexpr const char* pitchSemi     = "pitchSemi";
 inline constexpr const char* pitchCents    = "pitchCents";
+inline constexpr const char* octave        = "octave";
 inline constexpr const char* rootKey       = "rootKey";
 inline constexpr const char* interpQuality = "interpQuality";
 inline constexpr const char* attack        = "attack";
@@ -53,15 +54,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { pitchSemi, 1 },  "Pitch (semi)", -48, 48, 0));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { pitchCents, 1 }, "Pitch (cent)",
                                                        NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { octave, 1 },     "Octave", -4, 4, 0));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { rootKey, 1 },    "Root Key", 0, 127, 60));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { interpQuality, 1 }, "Interp",
                                                         StringArray { "Linear", "Hermite" }, 1));
 
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { attack, 1 },  "Attack",  msRange(), 1.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { attack, 1 },  "Attack",  msRange(), 4.0f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { decay, 1 },   "Decay",   msRange(), 100.0f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { sustain, 1 }, "Sustain",
                                                        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { release, 1 }, "Release", msRange(), 3.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { release, 1 }, "Release", msRange(), 9.0f));
 
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { sampleStart, 1 }, "Sample Start",
                                                        NormalisableRange<float> (0.0f, 1.0f, 0.0001f), 0.0f));
@@ -110,7 +112,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { tailMode, 1 }, "Tail Mode",
                     StringArray { "Off", "%", "ms", "Sync" }, 0));
     layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { tailPercent, 1 }, "Tail %",
-                    NormalisableRange<float> (0.0f, 100.0f, 1.0f), 20.0f));      // 再生長の末尾から削る割合
+                    NormalisableRange<float> (0.0f, 100.0f, 1.0f), 20.0f));      // 末尾から削る割合（20=20%削る）
     layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { tailMs, 1 }, "Tail ms",
                     NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 60.0f));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { tailSyncDiv, 1 }, "Tail Sync",

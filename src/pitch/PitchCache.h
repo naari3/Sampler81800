@@ -60,8 +60,10 @@ public:
     // 素材/モード/フォルマント/ストレッチ(timeRatio) が変わっていたら ready を無効化して作り直す。
     // （古いバッファは再生中の可能性があるので解放しない=graveyard保持）
     // 設定が変わっていたら true（プリウォームの再要求に使う）。
+    // start01/end01: トリム範囲（正規化 0..1）。この範囲だけをレンダするので、トリム変更でも作り直す。
     bool configure (const SampleBuffer* src, int version, int mode, int sub,
-                    double sampleRate, float formant, double timeRatio);
+                    double sampleRate, float formant, double timeRatio,
+                    float start01, float end01);
     bool hasPending() const noexcept
     { return reqLo.load() != 0 || reqHi.load() != 0; }
 
@@ -95,6 +97,7 @@ private:
     double curSr = 48000.0;
     float  curFormant = 0.0f;      // 量子化済み（0.25半音刻み）
     double curTimeRatio = 1.0;     // 量子化済み（0.01刻み）
+    float  curStart = 0.0f, curEnd = 1.0f;   // トリム範囲（量子化済み 0.001刻み）
     int    curGen = 0;             // 設定が1つでも変わるたびに +1（レンダリング有効性の判定用）
     std::vector<std::shared_ptr<const SampleBuffer>> graveyard;   // 再生中バッファの寿命保持
 };

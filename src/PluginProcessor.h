@@ -110,6 +110,18 @@ public:
         return tot > 0 ? (float) r / (float) tot : 1.0f;
     }
 
+    // ピッチ検出: 現在のサンプル(トリム範囲)の基音を解析して Root を自動設定（メッセージスレッド）。
+    // 検出できたら true。明確な音程が無ければ Root は変えず false。
+    bool  detectAndSetRoot();
+
+    //==========================================================================
+    // アップデート確認: GitHub Releases API をバックグラウンドで叩き、最新版と比較する。
+    void         checkForUpdatesAsync (bool force = false);
+    bool         isUpdateAvailable() const noexcept { return updateAvailable.load(); }
+    juce::String getLatestVersion() const;              // 取得できた最新タグ（"0.2.0" 等 / 無ければ空）
+    static juce::String getCurrentVersion();            // 自身のバージョン
+    static juce::URL    getReleasesUrl();               // リリース一覧ページ
+
     // ノーマライズ: 現在のサンプルのピークから正規化ゲインを算出（メッセージスレッド）。
     void  normalizeSample();
     void  resetNormalize() noexcept { normGain.store (1.0f); }
@@ -195,6 +207,7 @@ private:
     // RTアクセス用にキャッシュしたパラメータ atomic
     std::atomic<float>* pPitchSemi   = nullptr;
     std::atomic<float>* pPitchCents  = nullptr;
+    std::atomic<float>* pOctave      = nullptr;
     std::atomic<float>* pRootKey     = nullptr;
     std::atomic<float>* pInterp      = nullptr;
     std::atomic<float>* pAttack      = nullptr;
@@ -229,6 +242,12 @@ private:
     double hostBpm = 120.0;
     bool   hostBpmValid = false;
     int    lastReportedLatency = -1;
+
+    // アップデート確認の結果（バックグラウンドで書き, GUIから読む）
+    std::atomic<bool> updateCheckStarted { false };
+    std::atomic<bool> updateAvailable    { false };
+    juce::String          latestVersionStr;
+    juce::CriticalSection updateStrLock;
 
     // Tail（発音の最大長で自動ノートオフ＝ノート長を削る）用（オーディオスレッド専用・固定長, RT安全）。
     static constexpr int kNumNotes = 128;

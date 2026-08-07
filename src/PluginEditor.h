@@ -14,7 +14,7 @@
 #include "gui/DropZone.h"
 
 //==============================================================================
-// ポルタメントカーブの読み取り専用表示（§6.4）。portaCurve に連動して s(p)=p^(4^-curve) を描く。
+// ポルタメントカーブ表示＋編集。上下ドラッグで portaCurve(-1..1) を変える。s(p)=p^(4^-curve)。
 class CurveDisplay : public juce::Component,
                      private juce::Timer
 {
@@ -46,18 +46,32 @@ public:
         g.strokePath (p, juce::PathStrokeType (2.0f));
     }
 
+    void mouseDown (const juce::MouseEvent& e) override
+    { if (auto* p = processor.getAPVTS().getParameter (otomad::params::portaCurve)) p->beginChangeGesture(); drag (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { drag (e); }
+    void mouseUp   (const juce::MouseEvent&)  override
+    { if (auto* p = processor.getAPVTS().getParameter (otomad::params::portaCurve)) p->endChangeGesture(); }
+
 private:
+    void drag (const juce::MouseEvent& e)
+    {
+        auto b = getLocalBounds().toFloat().reduced (2.0f);
+        const float t = juce::jlimit (0.0f, 1.0f, (e.position.y - b.getY()) / juce::jmax (1.0f, b.getHeight()));
+        const float curve = juce::jlimit (-1.0f, 1.0f, 1.0f - 2.0f * t);   // 上=+1 / 下=-1
+        if (auto* p = processor.getAPVTS().getParameter (otomad::params::portaCurve))
+            p->setValueNotifyingHost (p->convertTo0to1 (curve));
+    }
     void timerCallback() override { repaint(); }
     OtoMadSamplerProcessor& processor;
 };
 
 //==============================================================================
-// ADSR エンベロープの可視化（読み取り専用）。attack/decay/sustain/release に連動。
+// ADSR エンベロープ表示＋編集。縦線でブレークポイントを示し、点をドラッグして A/D/S/R を変える。
 class AdsrDisplay : public juce::Component,
                     private juce::Timer
 {
 public:
-    explicit AdsrDisplay (OtoMadSamplerProcessor& p) : processor (p) { startTimerHz (20); }
+    explicit AdsrDisplay (OtoMadSamplerProcessor& p) : processor (p) { startTimerHz (30); }
     ~AdsrDisplay() override { stopTimer(); }
 
     void paint (juce::Graphics& g) override
@@ -66,44 +80,126 @@ public:
         g.setColour (juce::Colour (0xff0f0f13));
         g.fillRoundedRectangle (b, 3.0f);
 
-        auto& ap = processor.getAPVTS();
-        const float a = ap.getRawParameterValue (otomad::params::attack)->load();
-        const float d = ap.getRawParameterValue (otomad::params::decay)->load();
-        const float s = ap.getRawParameterValue (otomad::params::sustain)->load();
-        const float r = ap.getRawParameterValue (otomad::params::release)->load();
+        float xa, xd, xs, xr, yTop, yBot, sy;
+        computeLayout (b, xa, xd, xs, xr, yTop, yBot, sy);
+        const float x0 = b.getX();
+        const float ax = x0 + xa, dx2 = ax + xd, sx = dx2 + xs, rx = sx + xr;
+        const juce::Colour c (processor.getMainColourARGB());
 
-        // 時間(ms)は sqrt で圧縮して短時間も見えるように。サステインは固定幅で表現。
-        auto sc = [] (float ms) { return std::sqrt (std::max (0.0f, ms)); };
-        const float wa = sc (a), wd = sc (d), wr = sc (r);
-        const float sum   = std::max (1.0e-3f, wa + wd + wr);
-        const float sFrac = 0.22f;
-        const float avail = b.getWidth() * (1.0f - sFrac);
-        const float xa = avail * (wa / sum), xd = avail * (wd / sum), xr = avail * (wr / sum);
-        const float xs = b.getWidth() * sFrac;
-
-        const float yTop = b.getY() + 3.0f, yBot = b.getBottom() - 3.0f;
-        const float sy   = yBot - (yBot - yTop) * juce::jlimit (0.0f, 1.0f, s);
+        // 縦の区切り線（各ブレークポイント）
+        g.setColour (juce::Colours::white.withAlpha (0.12f));
+        for (float lx : { ax, dx2, sx })
+            g.drawVerticalLine (juce::roundToInt (lx), b.getY(), b.getBottom());
 
         juce::Path p;
-        float x = b.getX();
-        p.startNewSubPath (x, yBot);
-        p.lineTo (x += xa, yTop);     // Attack: 0 → peak
-        p.lineTo (x += xd, sy);       // Decay:  peak → sustain
-        p.lineTo (x += xs, sy);       // Sustain 保持
-        p.lineTo (x += xr, yBot);     // Release: → 0
+        p.startNewSubPath (x0, yBot);
+        p.lineTo (ax, yTop); p.lineTo (dx2, sy); p.lineTo (sx, sy); p.lineTo (rx, yBot);
+        juce::Path fill (p); fill.lineTo (rx, yBot); fill.closeSubPath();
+        g.setColour (c.withAlpha (0.15f)); g.fillPath (fill);
+        g.setColour (c); g.strokePath (p, juce::PathStrokeType (2.0f));
 
-        const juce::Colour c (processor.getMainColourARGB());
-        juce::Path fill (p);
-        fill.lineTo (x, yBot); fill.closeSubPath();
-        g.setColour (c.withAlpha (0.15f));
-        g.fillPath (fill);
-        g.setColour (c);
-        g.strokePath (p, juce::PathStrokeType (2.0f));
+        // ドラッグ点
+        for (auto pt : { juce::Point<float> (ax, yTop), juce::Point<float> (dx2, sy), juce::Point<float> (rx, yBot) })
+            g.fillEllipse (pt.x - 3.5f, pt.y - 3.5f, 7.0f, 7.0f);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (2.0f);
+        float xa, xd, xs, xr, yTop, yBot, sy; computeLayout (b, xa, xd, xs, xr, yTop, yBot, sy);
+        const float x0 = b.getX(); const float ax = x0 + xa, dx2 = ax + xd, rx = dx2 + xs + xr;
+        const juce::Point<float> hA (ax, yTop), hD (dx2, sy), hR (rx, yBot);
+        auto dist = [&] (juce::Point<float> h) { return std::hypot (h.x - e.position.x, h.y - e.position.y); };
+        const float dA = dist (hA), dD = dist (hD), dR = dist (hR);
+        grab = (dA <= dD && dA <= dR) ? 0 : (dD <= dR ? 1 : 2);
+        lastPos = e.position;
+        beginGestures();
+    }
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (2.0f);
+        const float dx = e.position.x - lastPos.x, dy = e.position.y - lastPos.y;
+        lastPos = e.position;
+        const float kSqrt = 70.7107f / juce::jmax (1.0f, b.getWidth());   // sqrt(5000)/幅
+        auto adjMs = [&] (const char* id, float dpx)
+        {
+            const float sq = std::sqrt (std::max (0.0f, get (id))) + dpx * kSqrt;
+            setP (id, juce::jlimit (0.0f, 5000.0f, sq * sq));
+        };
+        if (grab == 0) adjMs (otomad::params::attack, dx);
+        else if (grab == 1)
+        {
+            adjMs (otomad::params::decay, dx);
+            setP (otomad::params::sustain, juce::jlimit (0.0f, 1.0f,
+                    get (otomad::params::sustain) - dy / juce::jmax (1.0f, b.getHeight())));
+        }
+        else adjMs (otomad::params::release, dx);
+    }
+    void mouseUp (const juce::MouseEvent&) override { endGestures(); grab = -1; }
+
+private:
+    void computeLayout (juce::Rectangle<float> b, float& xa, float& xd, float& xs, float& xr,
+                        float& yTop, float& yBot, float& sy)
+    {
+        const float a = get (otomad::params::attack), d = get (otomad::params::decay);
+        const float s = get (otomad::params::sustain), r = get (otomad::params::release);
+        auto sc = [] (float ms) { return std::sqrt (std::max (0.0f, ms)); };
+        const float wa = sc (a), wd = sc (d), wr = sc (r);
+        const float sum = std::max (1.0e-3f, wa + wd + wr);
+        const float sFrac = 0.22f;
+        const float avail = b.getWidth() * (1.0f - sFrac);
+        xa = avail * (wa / sum); xd = avail * (wd / sum); xr = avail * (wr / sum); xs = b.getWidth() * sFrac;
+        yTop = b.getY() + 3.0f; yBot = b.getBottom() - 3.0f;
+        sy = yBot - (yBot - yTop) * juce::jlimit (0.0f, 1.0f, s);
+    }
+    float get (const char* id) const { return processor.getAPVTS().getRawParameterValue (id)->load(); }
+    void  setP (const char* id, float v)
+    { if (auto* p = processor.getAPVTS().getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (v)); }
+    void beginGestures() { for (auto id : { otomad::params::attack, otomad::params::decay, otomad::params::sustain, otomad::params::release }) if (auto* p = processor.getAPVTS().getParameter (id)) p->beginChangeGesture(); }
+    void endGestures()   { for (auto id : { otomad::params::attack, otomad::params::decay, otomad::params::sustain, otomad::params::release }) if (auto* p = processor.getAPVTS().getParameter (id)) p->endChangeGesture(); }
+    void timerCallback() override { repaint(); }
+
+    OtoMadSamplerProcessor& processor;
+    int grab = -1;
+    juce::Point<float> lastPos;
+};
+
+//==============================================================================
+// Root 鍵を色付け表示し、右クリックで Root を設定できる鍵盤。
+class RootKeyboard : public juce::MidiKeyboardComponent
+{
+public:
+    RootKeyboard (juce::MidiKeyboardState& s, Orientation o) : juce::MidiKeyboardComponent (s, o) {}
+
+    std::function<void (int)> onSetRoot;
+    juce::Colour markerColour { juce::Colours::red };
+    void setRootNote (int n) { if (n != rootNote) { rootNote = n; repaint(); } }
+
+protected:
+    bool mouseDownOnKey (int note, const juce::MouseEvent& e) override
+    {
+        if (e.mods.isRightButtonDown())   // 右クリックした鍵を Root に。音は鳴らさない。
+        {
+            if (onSetRoot) onSetRoot (note);
+            return false;
+        }
+        return true;
+    }
+    void drawWhiteNote (int n, juce::Graphics& g, juce::Rectangle<float> area,
+                        bool isDown, bool isOver, juce::Colour lineColour, juce::Colour textColour) override
+    {
+        juce::MidiKeyboardComponent::drawWhiteNote (n, g, area, isDown, isOver, lineColour, textColour);
+        if (n == rootNote) { g.setColour (markerColour.withAlpha (0.45f)); g.fillRect (area); }
+    }
+    void drawBlackNote (int n, juce::Graphics& g, juce::Rectangle<float> area,
+                        bool isDown, bool isOver, juce::Colour noteFillColour) override
+    {
+        juce::MidiKeyboardComponent::drawBlackNote (n, g, area, isDown, isOver, noteFillColour);
+        if (n == rootNote) { g.setColour (markerColour.withAlpha (0.6f)); g.fillRect (area); }
     }
 
 private:
-    void timerCallback() override { repaint(); }
-    OtoMadSamplerProcessor& processor;
+    int rootNote = 60;
 };
 
 //==============================================================================
@@ -177,7 +273,7 @@ private:
     otomad::gui::WaveViewState  waveView;   // 波形ズーム窓（waveform/dropZone より前に宣言）
     otomad::gui::WaveformView   waveform;
     otomad::gui::DropZone       dropZone;
-    juce::MidiKeyboardComponent keyboard;
+    RootKeyboard                keyboard;
     CurveDisplay                curveDisplay;
     AdsrDisplay                 adsrDisplay;
     juce::TooltipWindow         tooltipWindow { this, 500 };   // ノブ等のホバーヘルプ
@@ -190,8 +286,9 @@ private:
     juce::ToggleButton phaseLockButton { "Phase Lock" };
     std::unique_ptr<ButtonAttach> phaseLockAttach;
     juce::TextButton normalizeButton { "Normalize" };
+    juce::TextButton detectButton { "Detect" };   // 基音を検出して Root に設定
 
-    Knob* kSemi = nullptr; Knob* kCents = nullptr; Knob* kRoot = nullptr; Knob* kGain = nullptr;
+    Knob* kSemi = nullptr; Knob* kCents = nullptr; Knob* kOct = nullptr; Knob* kRoot = nullptr; Knob* kGain = nullptr;
     Knob* kAtk = nullptr;  Knob* kDec = nullptr;   Knob* kSus = nullptr;  Knob* kRel = nullptr;
     Knob* kStart = nullptr; Knob* kEnd = nullptr;
     Knob* kPTime = nullptr; Knob* kPCurve = nullptr; Knob* kGroup = nullptr;
@@ -221,6 +318,7 @@ private:
     // 外観: メインカラー用 LookAndFeel と設定オーバーレイ
     juce::LookAndFeel_V4 lnf;
     juce::TextButton     settingsButton;
+    juce::TextButton     updateButton;   // 更新あり時のみ表示（クリックでリリースページ）
     SettingsOverlay      settingsOverlay { processor };
     int                  lastAppearanceVersion = -1;
 

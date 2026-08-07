@@ -33,6 +33,7 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pitchCache.setApi (&reaperApi);
 
     pPitchSemi   = apvts.getRawParameterValue (otomad::params::pitchSemi);
+    pOctave      = apvts.getRawParameterValue (otomad::params::octave);
     pPitchCents  = apvts.getRawParameterValue (otomad::params::pitchCents);
     pRootKey     = apvts.getRawParameterValue (otomad::params::rootKey);
     pInterp      = apvts.getRawParameterValue (otomad::params::interpQuality);
@@ -116,12 +117,11 @@ bool OtoMadSamplerProcessor::isBusesLayoutSupported (const BusesLayout& layouts)
 void OtoMadSamplerProcessor::updateVoiceParams() noexcept
 {
     otomad::Voice::Params vp;
-    vp.pitchSemi  = pPitchSemi->load();
+    vp.pitchSemi  = pPitchSemi->load() + 12.0f * pOctave->load();   // オクターブを半音に換算して合算
     vp.pitchCents = pPitchCents->load();
     vp.rootKey    = (int) pRootKey->load();
     vp.gainLin    = juce::Decibels::decibelsToGain (pGain->load()) * normGain.load();
-    vp.quality    = ((int) pInterp->load() == 0) ? otomad::VarispeedEngine::Quality::Linear
-                                                 : otomad::VarispeedEngine::Quality::Hermite;
+    vp.quality    = otomad::VarispeedEngine::Quality::Hermite;   // 補間は Hermite 固定（良い方）
     voices.setVoiceParams (vp);
 
     voices.setAdsr (pAttack->load()  * 0.001f,
@@ -130,11 +130,12 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
                     pRelease->load() * 0.001f);
 
     voices.setPortamento ((otomad::VoiceManager::PortaMode) (int) pPortaMode->load(),
-                          ((int) pPortaShape->load() == 0) ? otomad::PortamentoGenerator::Shape::Time
-                                                           : otomad::PortamentoGenerator::Shape::Analog,
+                          otomad::PortamentoGenerator::Shape::Time,   // Shape は Time 固定
                           pPortaTime->load(), pPortaCurve->load(), pGlideGroup->load());
 
-    voices.setPoly ((int) pPolyMode->load() == 1, (int) pMaxVoices->load());
+    // Poly/Mono は Voices で決める: 1 なら Mono（ラストノート・グライド）、2以上で Poly。
+    const int maxV = (int) pMaxVoices->load();
+    voices.setPoly (maxV > 1, maxV);
 
     otomad::Voice::EngineControl ec;
     ec.algorithm    = (int) pAlgorithm->load();
@@ -228,7 +229,8 @@ std::int64_t OtoMadSamplerProcessor::samplePlayLengthSamples (int note) const no
     if (useCachePath())
     {
         const int semi = juce::jlimit (otomad::PitchCache::kMin, otomad::PitchCache::kMax,
-                                       note - (int) pRootKey->load() + (int) pPitchSemi->load());
+                                       note - (int) pRootKey->load() + (int) pPitchSemi->load()
+                                         + 12 * (int) pOctave->load());
         if (const auto* c = pitchCache.lookup (semi))
             return c->numSamples;
     }
@@ -240,6 +242,7 @@ std::int64_t OtoMadSamplerProcessor::samplePlayLengthSamples (int note) const no
     if (algo == 0)   // Varispeed: ピッチで再生速度が変わる（長さは 1/ratio）
     {
         const double effSemi = pPitchSemi->load() + pPitchCents->load() * 0.01
+                             + 12.0 * pOctave->load()
                              + (double) (note - (int) pRootKey->load());
         const double ratio = std::pow (2.0, effSemi / 12.0);
         if (ratio > 1.0e-6) len /= ratio;
@@ -265,7 +268,7 @@ std::int64_t OtoMadSamplerProcessor::computeTailAutoOffOffset (int note) const n
 
     const double sr = hostSampleRate.load();
     std::int64_t cut = 0;
-    if (mode == 1)        // % : 再生長に対する割合を末尾から削る
+    if (mode == 1)        // % : Tail% は「削る割合」。削る量 = 再生長 × Tail%/100
         cut = (std::int64_t) ((double) playLen * (double) pTailPercent->load() * 0.01);
     else if (mode == 2)   // ms
         cut = (std::int64_t) ((double) pTailMs->load() * 0.001 * sr);
@@ -283,9 +286,13 @@ std::int64_t OtoMadSamplerProcessor::computeTailAutoOffOffset (int note) const n
     if (cut <= 0)
         return -1;
 
-    std::int64_t off = playLen - cut;
-    const std::int64_t minOff = (std::int64_t) (0.005 * sr);   // 削りすぎても最低 5ms は鳴らす
-    return off < minOff ? minOff : off;
+    // Release を考慮: リリースは自動オフ後に伸びるので、その分だけ早めにオフして
+    // リリースが「削り位置」でちょうど終わるようにする（削る量＝実際の発音終端に一致）。
+    const std::int64_t rel = (std::int64_t) ((double) pRelease->load() * 0.001 * sr);
+
+    // 5ms 下限は撤去（とりあえず）。削りすぎて 0 以下になったら発音開始で即オフ。
+    const std::int64_t off = playLen - cut - rel;
+    return off > 0 ? off : 0;
 }
 
 void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
@@ -321,13 +328,15 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg, st
         if (useCachePath())
         {
             const int semi = juce::jlimit (otomad::PitchCache::kMin, otomad::PitchCache::kMax,
-                                           note - (int) pRootKey->load() + (int) pPitchSemi->load());
+                                           note - (int) pRootKey->load() + (int) pPitchSemi->load()
+                                             + 12 * (int) pOctave->load());
             if (const auto* cached = pitchCache.lookup (semi))
-                voices.noteOn (note, vel, cached, s, e, snap, true, (float) semi);   // 遅延ゼロ・élastique品質
+                // キャッシュはトリム範囲だけをレンダ済み → 全体(0..1)を再生（二重トリム防止）
+                voices.noteOn (note, vel, cached, 0.0f, 1.0f, snap, true, (float) semi);
             else
             {
                 pitchCache.request (semi);                                           // 背景でレンダリング要求
-                voices.noteOn (note, vel, activeSample.load(), s, e, snap, true, 0.0f); // 一発目は Varispeed で綺麗に
+                voices.noteOn (note, vel, activeSample.load(), s, e, snap, true, 0.0f); // 一発目は Varispeed で綺麗に（原音をトリム）
             }
         }
         else
@@ -445,15 +454,16 @@ void OtoMadSamplerProcessor::serviceCache()
         timeRatio = st > 0.0f ? 1.0 / (double) st : 1.0;
     }
 
-    // 素材/モード/フォルマント/ストレッチ を反映（変わっていれば ready を無効化して作り直す）
+    // 素材/モード/フォルマント/ストレッチ/トリム を反映（変わっていれば ready を無効化して作り直す）
     const bool changed = pitchCache.configure (activeSample.load(), sampleVersion.load(),
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
-                          hostSampleRate.load(), pFormant->load(), timeRatio);
+                          hostSampleRate.load(), pFormant->load(), timeRatio,
+                          pSampleStart->load(), pSampleEnd->load());
 
     // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±48 半音（全域）をまとめて背景生成（停止中に貯める）
     if (changed && useCachePath())
     {
-        const int c = (int) pPitchSemi->load();
+        const int c = (int) pPitchSemi->load() + 12 * (int) pOctave->load();
         pitchCache.requestRange (c - 48, c + 48);
     }
 
@@ -482,6 +492,220 @@ void OtoMadSamplerProcessor::reconfigureReaperMode()
     lastReportedLatency = voices.getCurrentLatency();
     setLatencySamples (lastReportedLatency);
     suspendProcessing (false);
+}
+
+// 1窓の YIN。x は DC除去済みのモノ窓。outFreq に基本周波数、戻り値は非周期性(0=完全周期, 小さいほど信頼)。
+static double yinDetectWindow (const float* x, int W, double sr, double& outFreq) noexcept
+{
+    outFreq = 0.0;
+    const int minTau = std::max (2, (int) (sr / 1500.0));   // 上限 ~1500Hz
+    const int maxTau = std::min (W / 2, (int) (sr / 50.0));  // 下限 ~50Hz
+    if (maxTau <= minTau)
+        return 1.0;
+
+    std::vector<float> dn ((std::size_t) (maxTau + 1), 1.0f);   // 累積平均正規化差分
+    float running = 0.0f;
+    for (int tau = minTau; tau <= maxTau; ++tau)
+    {
+        float sum = 0.0f;
+        for (int j = 0; j + tau < W; ++j)
+        {
+            const float diff = x[j] - x[j + tau];
+            sum += diff * diff;
+        }
+        running += sum;
+        dn[(std::size_t) tau] = running > 0.0f ? sum * (float) (tau - minTau + 1) / running : 1.0f;
+    }
+
+    // 標準YIN: 閾値を割る最初の谷まで下って、その谷の底(局所最小)を採る（オクターブ下取りを防ぐ）。
+    const float thr = 0.15f;
+    int best = -1;
+    for (int tau = minTau; tau < maxTau; ++tau)
+    {
+        if (dn[(std::size_t) tau] < thr)
+        {
+            while (tau + 1 < maxTau && dn[(std::size_t) (tau + 1)] < dn[(std::size_t) tau])
+                ++tau;
+            best = tau;
+            break;
+        }
+    }
+    if (best < 0)   // 閾値未達 → 全体最小
+    {
+        int mt = minTau; float mv = dn[(std::size_t) minTau];
+        for (int tau = minTau + 1; tau <= maxTau; ++tau)
+            if (dn[(std::size_t) tau] < mv) { mv = dn[(std::size_t) tau]; mt = tau; }
+        best = mt;
+    }
+
+    // 放物線補間
+    double tauR = best;
+    if (best > minTau && best < maxTau)
+    {
+        const float a = dn[(std::size_t) (best - 1)], b = dn[(std::size_t) best], c = dn[(std::size_t) (best + 1)];
+        const float den = a + c - 2.0f * b;
+        if (std::abs (den) > 1.0e-9f)
+            tauR = best + 0.5 * (double) ((a - c) / den);
+    }
+    if (tauR <= 0.0)
+        return 1.0;
+    outFreq = sr / tauR;
+    return dn[(std::size_t) best];
+}
+
+bool OtoMadSamplerProcessor::detectAndSetRoot()
+{
+    const auto* sb = activeSample.load();
+    if (sb == nullptr || sb->numSamples <= 0 || sb->numChannels <= 0)
+        return false;
+
+    const double sr = sb->sampleRate > 0.0 ? sb->sampleRate : hostSampleRate.load();
+    const std::int64_t total = sb->numSamples;
+    std::int64_t s = (std::int64_t) std::llround ((double) juce::jlimit (0.0f, 1.0f, pSampleStart->load()) * (double) total);
+    std::int64_t e = (std::int64_t) std::llround ((double) juce::jlimit (0.0f, 1.0f, pSampleEnd->load())   * (double) total);
+    s = juce::jlimit<std::int64_t> (0, total, s);
+    e = juce::jlimit<std::int64_t> (0, total, e);
+
+    // アタックを少し飛ばした解析領域
+    const std::int64_t skip   = std::min<std::int64_t> ((e - s) / 20, (std::int64_t) (0.01 * sr));
+    const std::int64_t rStart = s + skip;
+    const std::int64_t rEnd   = e;
+    if (rEnd - rStart < 1024)
+        return false;
+
+    // 領域全体に複数窓を敷いて、各窓のYIN結果(信頼できるもの)の音程を中央値で採る。
+    // → 単一窓のオクターブ誤検出・トランジェント・ノイズに強くする。
+    const int W = (int) std::min<std::int64_t> (4096, rEnd - rStart);
+    const float inv = 1.0f / (float) sb->numChannels;
+    const int maxWin = 24;
+    std::int64_t hop = (rEnd - rStart - W) / std::max (1, maxWin - 1);
+    if (hop < W / 4) hop = std::max<std::int64_t> (W / 4, 1);   // 領域が短ければ窓は少数
+
+    std::vector<float> buf ((std::size_t) W);
+    std::vector<float> notes;      // 信頼できた窓の音程（MIDI, float）
+    notes.reserve (32);
+
+    for (std::int64_t ws = rStart; ws + 1024 <= rEnd; ws += hop)
+    {
+        const int w = (int) std::min<std::int64_t> (W, rEnd - ws);
+        if (w < 1024)
+            break;
+
+        // モノ化 ＋ DC除去 ＋ 実効レベルチェック（無音窓は捨てる）
+        double mean = 0.0, energy = 0.0;
+        for (int i = 0; i < w; ++i)
+        {
+            float m = 0.0f;
+            for (int ch = 0; ch < sb->numChannels; ++ch)
+                m += sb->data[(std::size_t) ch][(std::size_t) (ws + i)];
+            m *= inv;
+            buf[(std::size_t) i] = m;
+            mean += m;
+        }
+        mean /= (double) w;
+        for (int i = 0; i < w; ++i) { buf[(std::size_t) i] -= (float) mean; energy += (double) buf[(std::size_t) i] * buf[(std::size_t) i]; }
+        if (energy / (double) w < 1.0e-6)   // ほぼ無音 → スキップ
+            continue;
+
+        double freq = 0.0;
+        const double aper = yinDetectWindow (buf.data(), w, sr, freq);
+        if (aper < 0.2 && freq > 0.0)
+            notes.push_back ((float) (69.0 + 12.0 * std::log2 (freq / 440.0)));
+
+        if ((int) notes.size() >= maxWin)
+            break;
+    }
+
+    if (notes.size() < 3)   // 信頼できる窓が少なすぎ → 明確な音程なしと判断
+        return false;
+
+    std::sort (notes.begin(), notes.end());
+    const double P = (double) notes[notes.size() / 2];      // 検出したサンプルの実ピッチ（MIDI）
+
+    // 50セント(=0.5半音)グリッドに合わせる: 実ピッチ P を最寄りのグリッド G に補正する。
+    //   Root = P に最も近い鍵盤（そのキーを押すと G が鳴る）
+    //   Cent = P→G の補正量（最大 ±25 セント）
+    const double G = std::round (P * 2.0) / 2.0;
+    const int    root  = juce::jlimit (0, 127, (int) std::lround (P));
+    const double cents = juce::jlimit (-100.0, 100.0, (G - P) * 100.0);
+
+    if (auto* pr = dynamic_cast<juce::AudioParameterInt*>   (apvts.getParameter (otomad::params::rootKey)))
+        *pr = root;
+    if (auto* pc = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (otomad::params::pitchCents)))
+        *pc = (float) cents;
+    return true;
+}
+
+//==============================================================================
+juce::String OtoMadSamplerProcessor::getCurrentVersion()
+{
+   #ifdef OTOMAD_VERSION
+    return juce::String (OTOMAD_VERSION);
+   #else
+    return "0.0.0";
+   #endif
+}
+
+juce::URL OtoMadSamplerProcessor::getReleasesUrl()
+{
+    return juce::URL ("https://github.com/neon-uriel/Sampler81800/releases");
+}
+
+juce::String OtoMadSamplerProcessor::getLatestVersion() const
+{
+    const juce::ScopedLock sl (updateStrLock);
+    return latestVersionStr;
+}
+
+// "0.2.0" > "0.1.9" などをドット区切り整数で比較（先頭の 'v' は無視）。
+static bool versionIsNewer (const juce::String& cand, const juce::String& base)
+{
+    auto toks = [] (juce::String s)
+    {
+        juce::StringArray t;
+        t.addTokens (s.retainCharacters ("0123456789."), ".", "");
+        return t;
+    };
+    const auto a = toks (cand), b = toks (base);
+    for (int i = 0; i < juce::jmax (a.size(), b.size()); ++i)
+    {
+        const int va = i < a.size() ? a[i].getIntValue() : 0;
+        const int vb = i < b.size() ? b[i].getIntValue() : 0;
+        if (va != vb) return va > vb;
+    }
+    return false;
+}
+
+void OtoMadSamplerProcessor::checkForUpdatesAsync (bool force)
+{
+    if (! force && updateCheckStarted.exchange (true))
+        return;   // 自動確認は一度だけ
+    if (force)
+        updateCheckStarted.store (true);
+
+    loadPool.addJob ([this]
+    {
+        juce::URL url ("https://api.github.com/repos/neon-uriel/Sampler81800/releases/latest");
+        const auto opts = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                            .withConnectionTimeoutMs (5000)
+                            .withExtraHeaders ("User-Agent: OtoMadSampler\nAccept: application/vnd.github+json");
+
+        std::unique_ptr<juce::InputStream> stream (url.createInputStream (opts));
+        if (stream == nullptr)
+            return;
+
+        const auto text = stream->readEntireStreamAsString();
+        const auto json = juce::JSON::parse (text);
+        const auto tag  = json.getProperty ("tag_name", juce::var()).toString();
+        if (tag.isEmpty())
+            return;
+
+        {
+            const juce::ScopedLock sl (updateStrLock);
+            latestVersionStr = tag.retainCharacters ("0123456789.");
+        }
+        updateAvailable.store (versionIsNewer (tag, getCurrentVersion()));
+    });
 }
 
 void OtoMadSamplerProcessor::normalizeSample()

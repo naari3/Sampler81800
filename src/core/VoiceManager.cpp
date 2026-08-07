@@ -82,12 +82,15 @@ void VoiceManager::noteOn (int note, float vel, const SampleBuffer* sample,
         else if (portaMode == PortaMode::Always && lastMonoPitch >= 0.0f
                  && lastMonoPitch != (float) note)
         {
-            // Always: 音が切れていても直前ノートのピッチから滑らせて発音する
-            v.noteOn (sample, note, vel, s01, e01, snap, true, lastMonoPitch, useVarispeed, prePitchedSemi);
+            // Always: 音が切れていても直前ノートのピッチから滑らせて発音する。
+            // requestSteal 経由で、前の音が残っていれば短いフェードで切替（リトリガーのプチ音防止）。
+            v.requestSteal (sample, note, vel, s01, e01, snap, true, lastMonoPitch, useVarispeed, prePitchedSemi);
         }
         else
         {
-            v.noteOn (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
+            // モノのリトリガー: requestSteal で旧音を短時間フェードしてから新音を開始（デクリック）。
+            // アイドル時は即発音になる。ハードな noteOn だと波形の段差で「ぷつっ」と鳴る。
+            v.requestSteal (sample, note, vel, s01, e01, snap, false, (float) note, useVarispeed, prePitchedSemi);
         }
 
         voiceOnTime[0] = now;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(OtoMadSampler VERSION 0.1.0 LANGUAGES C CXX)
+project(OtoMadSampler VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +71,7 @@ target_compile_features(OtoMadSampler PRIVATE cxx_std_20)
 target_compile_options(OtoMadSampler PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 
 target_compile_definitions(OtoMadSampler PUBLIC
+    OTOMAD_VERSION="${PROJECT_VERSION}"          # アップデート確認用の自バージョン
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0

@@ -23,16 +23,20 @@ namespace otomad
 using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 
 bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
-                            double sampleRate, float formant, double timeRatio)
+                            double sampleRate, float formant, double timeRatio,
+                            float start01, float end01)
 {
     // 微小変化での再レンダリング連発を避けるため量子化
     const float  fq = std::round (formant * 4.0f) / 4.0f;        // 0.25半音刻み
     const double tq = std::round (timeRatio * 100.0) / 100.0;    // 0.01刻み
+    const float  sq = std::round (std::clamp (start01, 0.0f, 1.0f) * 1000.0f) / 1000.0f;   // 0.1%刻み
+    const float  eq = std::round (std::clamp (end01,   0.0f, 1.0f) * 1000.0f) / 1000.0f;
 
     std::lock_guard<std::mutex> lock (ownerLock);
     if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
         && std::abs (sampleRate - curSr) < 1.0e-6
-        && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6)
+        && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6
+        && std::abs (sq - curStart) < 1.0e-6 && std::abs (eq - curEnd) < 1.0e-6)
         return false;
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
@@ -40,7 +44,7 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     reqLo.store (0); reqHi.store (0);
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
-    curFormant = fq; curTimeRatio = tq;
+    curFormant = fq; curTimeRatio = tq; curStart = sq; curEnd = eq;
     ++curGen;   // 設定が変わった → 進行中のレンダリングは無効化される
     return true;
 }
@@ -87,11 +91,12 @@ bool PitchCache::renderPending()
 std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
 {
     // 設定のスナップショット
-    const SampleBuffer* src; int mode, sub; double sr; float formant; double timeRatio;
+    const SampleBuffer* src; int mode, sub; double sr; float formant; double timeRatio; float start, end;
     {
         std::lock_guard<std::mutex> lock (ownerLock);
         src = curSrc; mode = curMode; sub = curSub; sr = curSr;
         formant = curFormant; timeRatio = curTimeRatio;
+        start = curStart; end = curEnd;
         usedGen = curGen;
     }
     if (api == nullptr || src == nullptr || src->numSamples <= 0)
@@ -107,10 +112,19 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     const int    numCh = std::max (1, src->numChannels);
     const double shift = std::pow (2.0, (double) semi / 12.0);
 
-    // 入力(元素材)ピーク（診断用・後で削除）
+    // トリム範囲 [base, base+n) だけをレンダする（Start/End で指定した範囲のみキャッシュ）。
+    const std::int64_t total = src->numSamples;
+    std::int64_t base   = (std::int64_t) std::llround ((double) start * (double) total);
+    std::int64_t endIdx = (std::int64_t) std::llround ((double) end   * (double) total);
+    base   = std::clamp<std::int64_t> (base,   0, total);
+    endIdx = std::clamp<std::int64_t> (endIdx, 0, total);
+    if (endIdx <= base)
+        return nullptr;   // 空トリム
+
+    // 入力(トリム範囲)ピーク（メイクアップゲイン算出用）
     float srcPeak = 0.0f;
     for (int ch = 0; ch < numCh; ++ch)
-        for (std::int64_t i = 0; i < src->numSamples; ++i)
+        for (std::int64_t i = base; i < endIdx; ++i)
             srcPeak = std::max (srcPeak, std::abs ((float) src->sampleAtRaw (ch, i)));
 
     ps->set_srate (sr);
@@ -126,7 +140,7 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     ps->Reset();
 
     // --- オフライン・レンダリング（プローブ非依存の堅牢版）---
-    const std::int64_t n = src->numSamples;
+    const std::int64_t n = endIdx - base;   // トリム範囲の長さ
     // 目標出力長（Manualストレッチ等で長さが変わる）。set_tempo(timeRatio) → 出力 ≈ n / timeRatio。
     const std::int64_t expectedLen = timeRatio > 1.0e-6
         ? (std::int64_t) std::llround ((double) n / timeRatio) : n;
@@ -149,7 +163,7 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     };
     auto outLen = [&]() -> std::int64_t { return out.empty() ? 0 : (std::int64_t) out[0].size(); };
 
-    // 1) 実入力を供給
+    // 1) 実入力を供給（トリム範囲のみ）
     for (std::int64_t pos = 0; pos < n; pos += chunk)
     {
         const int c = (int) std::min<std::int64_t> (chunk, n - pos);
@@ -157,7 +171,7 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
         {
             for (int i = 0; i < c; ++i)
                 for (int ch = 0; ch < numCh; ++ch)
-                    b[(std::size_t) (i * numCh + ch)] = (ReaSample) src->sampleAtRaw (ch, pos + i);
+                    b[(std::size_t) (i * numCh + ch)] = (ReaSample) src->sampleAtRaw (ch, base + pos + i);
             ps->BufferDone (c);
         }
         drain();

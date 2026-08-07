@@ -12,6 +12,7 @@ static juce::String helpForParam (const juce::String& id)
     auto u = [] (const char* s) { return juce::String (juce::CharPointer_UTF8 (s)); };
     if (id == pitchSemi)     return u ("ピッチ（半音単位）");
     if (id == pitchCents)    return u ("ピッチの微調整（セント）");
+    if (id == octave)        return u ("オクターブ変更（±4）");
     if (id == rootKey)       return u ("ルート鍵盤：この音で原音のピッチになる");
     if (id == gain)          return u ("出力ゲイン");
     if (id == attack)        return u ("アタック：発音から最大音量までの時間");
@@ -37,7 +38,7 @@ static juce::String helpForParam (const juce::String& id)
     if (id == snapZeroCross) return u ("トリム端をゼロクロスへ吸着（プチ防止）");
     if (id == phaseLock)     return u ("位相ロック（Phase Vocoder）");
     if (id == tailMode)      return u ("Tail：サンプル末尾から固定量を削る（端切れ対策・レイテンシ0）。Off/%/ms/Sync");
-    if (id == tailPercent)   return u ("Tail 量：再生長に対する割合を末尾から削る（Tail=% 時）");
+    if (id == tailPercent)   return u ("Tail 量：末尾から削る割合（20=20%削る, Tail=% 時）");
     if (id == tailMs)        return u ("Tail 量：末尾から削る時間 ms（Tail=ms 時）");
     if (id == tailSyncDiv)   return u ("Tail 量：末尾から削るテンポ音価（Tail=Sync 時）");
     return {};
@@ -60,15 +61,27 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
 
     // 画面キーボードは固定ベロシティ（クリック位置依存で小さくなるのを防ぐ）
     keyboard.setVelocity (0.9f, false);
+    keyboard.onSetRoot = [this] (int n) { setIntParam (P::rootKey, n); };   // 右クリックで Root 設定
 
     addAndMakeVisible (normalizeButton);
     normalizeButton.onClick = [this] { processor.normalizeSample(); };
+
+    addAndMakeVisible (detectButton);
+    detectButton.setTooltip (juce::String (juce::CharPointer_UTF8 ("読み込んだ音の基音を検出して Root に自動設定")));
+    detectButton.onClick = [this]
+    {
+        const bool ok = processor.detectAndSetRoot();
+        detectButton.setButtonText (ok ? "Detect \xe2\x9c\x93"
+                                       : juce::String (juce::CharPointer_UTF8 ("\xe4\xb8\x8d\xe6\x98\x8e")));   // 不明
+        juce::Timer::callAfterDelay (900, [this] { detectButton.setButtonText ("Detect"); });
+    };
 
     const auto rotary = juce::Slider::RotaryHorizontalVerticalDrag;
     const auto linear = juce::Slider::LinearHorizontal;
 
     kSemi  = &addKnob (P::pitchSemi,   "Semi",  rotary);
     kCents = &addKnob (P::pitchCents,  "Cent",  rotary);
+    kOct   = &addKnob (P::octave,      "Oct",   rotary);
     kRoot  = &addKnob (P::rootKey,     "Root",  rotary);
     kGain  = &addKnob (P::gain,        "Gain",  rotary);
     kAtk   = &addKnob (P::attack,      "A",     rotary);
@@ -78,12 +91,16 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kStart = &addKnob (P::sampleStart, "Start", linear);
     kEnd   = &addKnob (P::sampleEnd,   "End",   linear);
     kPTime = &addKnob (P::portaTime,   "Glide", rotary);
-    kPCurve= &addKnob (P::portaCurve,  "Curve", rotary);
-    kGroup = &addKnob (P::glideGroupMs,"Group", rotary);
     kMaxV  = &addKnob (P::maxVoices,   "Voices",rotary);
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
     kStretch = &addKnob (P::stretchAmount, "Stretch", linear);   // 横フェーダー
     kFormant = &addKnob (P::formant,       "Formnt",  rotary);
+
+    // Root は音名表示（例: C#4）。C4=60 表記。右クリック鍵盤や検出とも連動。
+    kRoot->slider.textFromValueFunction = [] (double v)
+    { return juce::MidiMessage::getMidiNoteName ((int) v, true, true, 4); };
+    kRoot->slider.valueFromTextFunction = [] (const juce::String& t) { return (double) t.getIntValue(); };
+    kRoot->slider.updateText();
 
     // REAPER Mode / Sub は動的名リストのコンボ（アタッチメント無し・手動でパラメータへ）
     rModeLbl.setText ("R.Mode", juce::dontSendNotification); rModeLbl.setJustificationType (juce::Justification::centred);
@@ -93,10 +110,7 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     rModeBox.onChange = [this] { if (rModeBox.getSelectedId() > 0) setIntParam (P::reaperMode,    rModeBox.getSelectedId() - 1); };
     rSubBox.onChange  = [this] { if (rSubBox.getSelectedId()  > 0) setIntParam (P::reaperSubMode, rSubBox.getSelectedId()  - 1); };
 
-    cInterp = &addCombo (P::interpQuality, "Interp", { "Linear", "Hermite" });
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
-    cPShape = &addCombo (P::portaShape,    "Shape",  { "Time", "Analog" });
-    cPoly   = &addCombo (P::polyMode,      "Poly",   { "Mono", "Poly" });
     cAlgo   = &addCombo (P::algorithm,     "Algo",
                          { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" });
     cDur    = &addCombo (P::durationMode,  "Duration", { "Natural", "Sync", "Manual" });
@@ -146,6 +160,12 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     settingsOverlay.onChanged = [this] { applyMainColour(); repaint(); };
     addChildComponent (settingsOverlay);   // 既定は非表示
 
+    // アップデート確認バナー（更新があるときだけ表示。クリックでリリースページを開く）
+    updateButton.setColour (juce::TextButton::buttonColourId, juce::Colours::darkorange);
+    updateButton.onClick = [] { OtoMadSamplerProcessor::getReleasesUrl().launchInDefaultBrowser(); };
+    addChildComponent (updateButton);
+    processor.checkForUpdatesAsync();   // 起動時に一度、背景で確認
+
     applyMainColour();
     lastAppearanceVersion = processor.getAppearanceVersion();
 
@@ -172,6 +192,7 @@ void OtoMadSamplerEditor::applyMainColour()
     // カスタム描画のコンポーネントはメインカラーを直接読むので repaint で十分
     cacheBar.setColour (juce::ProgressBar::foregroundColourId, c);
     keyboard.setColour (juce::MidiKeyboardComponent::keyDownOverlayColourId, c.withAlpha (0.7f));
+    keyboard.markerColour = c.withRotatedHue (0.5f);   // Root 鍵は補色でマーク
 
     repaint();
 }
@@ -197,6 +218,17 @@ void OtoMadSamplerEditor::timerCallback()
     auto& apvts = processor.getAPVTS();
     const int algo = (int) apvts.getRawParameterValue (P::algorithm)->load();
     const int dur  = (int) apvts.getRawParameterValue (P::durationMode)->load();
+
+    keyboard.setRootNote ((int) apvts.getRawParameterValue (P::rootKey)->load());   // Root 鍵の色付け
+
+    // アップデートあり → バナー表示（一度だけ）
+    if (processor.isUpdateAvailable() && ! updateButton.isVisible())
+    {
+        updateButton.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\xac\x86 v"))
+                                    + processor.getLatestVersion() + juce::String (juce::CharPointer_UTF8 (" \xe6\x9b\xb4\xe6\x96\xb0")));  // ⬆ vX 更新
+        updateButton.setVisible (true);
+        resized();
+    }
 
     // モード名コンボを一度だけ埋める（REAPER利用可時）
     if (processor.isReaperAvailable() && ! modePopulated)
@@ -263,7 +295,7 @@ void OtoMadSamplerEditor::timerCallback()
     const bool isVari   = (algo == 0);
 
     enableKnob  (kFormant, isReaper);                 // フォルマントは REAPER キャッシュのみ焼き込み
-    enableCombo (cInterp,  isVari || isReaper);       // 補間は Varispeed / REAPERキャッシュ再生で有効
+    juce::ignoreUnused (isVari);
     enableKnob  (kStretch, dur == 2);                 // Stretch は Manual のみ
     enableCombo (cSync,    dur == 1);                 // Sync Length は Sync のみ
     enableComp  (phaseLockButton, isPV);              // Phase Lock は Phase Vocoder のみ
@@ -376,8 +408,9 @@ void OtoMadSamplerEditor::resized()
 
     // 設定オーバーレイは全面
     settingsOverlay.setBounds (getLocalBounds());
-    // 設定ボタン（右上隅）
+    // 設定ボタン（右上隅）＋ 更新バナー（その左, 更新あり時のみ表示）
     settingsButton.setBounds (getWidth() - 34, 6, 28, 24);
+    updateButton.setBounds (getWidth() - 34 - 132, 6, 128, 24);
     // ヘッダ右側にキャッシュ進捗バー（ロゴは左寄せなので右側が空いている。設定ボタンを避ける）
     cacheBar.setBounds (getLocalBounds().removeFromTop (82).removeFromRight (240).reduced (14, 30).withTrimmedRight (30));
 
@@ -390,6 +423,7 @@ void OtoMadSamplerEditor::resized()
 
     auto trimRow = r.removeFromTop (40).reduced (8, 4);
     normalizeButton.setBounds (trimRow.removeFromRight (92).reduced (2, 4));
+    detectButton.setBounds (trimRow.removeFromRight (66).reduced (2, 4));   // Root自動検出
     kStart->label.setBounds (trimRow.removeFromLeft (44));
     kStart->slider.setBounds (trimRow.removeFromLeft (trimRow.getWidth() / 2 - 4).withTrimmedRight (4));
     kEnd->label.setBounds (trimRow.removeFromLeft (40));
@@ -426,21 +460,21 @@ void OtoMadSamplerEditor::resized()
     auto rowRect = [&] { return grid.removeFromTop (rowH); };
     auto cell = [] (juce::Rectangle<int>& row, int cols) { return row.removeFromLeft (row.getWidth() / cols).reduced (4); };
 
-    // row1: Semi Cent Root Gain [Interp] Snap
+    // row1: Semi Cent Oct Root Gain Snap
     {
         auto row = rowRect(); int c = 6;
-        place (kSemi, cell (row, c)); place (kCents, cell (row, c - 1));
-        place (kRoot, cell (row, c - 2)); place (kGain, cell (row, c - 3));
-        placeCombo (cInterp, cell (row, c - 4));
+        place (kSemi, cell (row, c)); place (kCents, cell (row, c - 1)); place (kOct, cell (row, c - 2));
+        place (kRoot, cell (row, c - 3)); place (kGain, cell (row, c - 4));
         snapButton.setBounds (row.reduced (4).withTrimmedTop (16));
     }
-    // row3: Glide Curve Group [Porta][Shape][Poly]
+    // row3: Glide [Porta] + カーブGUI（ドラッグで編集, 残り幅いっぱい）
     {
         auto row = rowRect(); int c = 6;
-        place (kPTime, cell (row, c)); place (kPCurve, cell (row, c - 1)); place (kGroup, cell (row, c - 2));
-        placeCombo (cPMode, cell (row, c - 3)); placeCombo (cPShape, cell (row, c - 4)); placeCombo (cPoly, cell (row, c - 5));
+        place (kPTime, cell (row, c));
+        placeCombo (cPMode, cell (row, c - 1));
+        curveDisplay.setBounds (row.reduced (4));
     }
-    // row4: [Algo][Duration][Sync] Stretch Formant [R.Mode combo][R.Sub combo] [PhaseLock+CurveDisplay]
+    // row4: [Algo][Duration][Sync] Stretch Formant [R.Mode combo][R.Sub combo] [PhaseLock]
     {
         auto row = rowRect(); int c = 8;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
@@ -452,9 +486,7 @@ void OtoMadSamplerEditor::resized()
         };
         placeRawCombo (rModeLbl, rModeBox, cell (row, c - 5));
         placeRawCombo (rSubLbl,  rSubBox,  cell (row, c - 6));
-        auto last = row.reduced (4);
-        phaseLockButton.setBounds (last.removeFromTop (22));
-        curveDisplay.setBounds (last);
+        phaseLockButton.setBounds (row.reduced (4).withTrimmedTop (16));
     }
     // row5: [Tail mode][Tail%][TailMs][T.Sync]  （残りは空き）
     {
