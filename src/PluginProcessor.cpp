@@ -1,5 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#if OTOMAD_WEB_UI
+ #include "WebEditor.h"
+#endif
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -61,6 +64,10 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
     pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
+    pVibDepth    = apvts.getRawParameterValue (otomad::params::vibDepth);
+    pVibRate     = apvts.getRawParameterValue (otomad::params::vibRate);
+    pVibDelay    = apvts.getRawParameterValue (otomad::params::vibDelay);
+    pVibFade     = apvts.getRawParameterValue (otomad::params::vibFade);
 
     loadDefaultAppearance();   // 全インスタンス共通の外観既定（あれば）。state復元があれば後で上書きされる。
 
@@ -113,6 +120,10 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     vp.rootKey    = (int) pRootKey->load();
     vp.gainLin    = juce::Decibels::decibelsToGain (pGain->load()) * normGain.load();
     vp.quality    = otomad::VarispeedEngine::Quality::Hermite;   // 補間は Hermite 固定（良い方）
+    vp.vibDepthCents = pVibDepth->load();
+    vp.vibRateHz     = pVibRate->load();
+    vp.vibDelayMs    = pVibDelay->load();
+    vp.vibFadeMs     = pVibFade->load();
     voices.setVoiceParams (vp);
 
     voices.setAdsr (pAttack->load()  * 0.001f,
@@ -254,13 +265,119 @@ void OtoMadSamplerProcessor::publishSample (std::shared_ptr<const otomad::Sample
 {
     if (sb == nullptr)
         return;
+
+    // 読み込みは背景スレッドで走る。サンプルリストと APVTS はメッセージスレッド専用なので、
+    // そちらへ回す（WeakReference でプラグイン破棄後の実行を防ぐ）。
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+    {
+        addSampleImpl (std::move (sb));
+        return;
+    }
+    juce::WeakReference<OtoMadSamplerProcessor> weak (this);
+    juce::MessageManager::callAsync ([weak, sb]() mutable
+    {
+        if (auto* p = weak.get())
+            p->addSampleImpl (std::move (sb));
+    });
+}
+
+void OtoMadSamplerProcessor::addSampleImpl (std::shared_ptr<const otomad::SampleBuffer> sb)
+{
+    if (sb == nullptr)
+        return;
     {
         const juce::ScopedLock sl (graveyardLock);
         sampleGraveyard.push_back (sb);
     }
+
+    // 選択中スロットの設定を退避してから、新しいスロットを追加する。
+    const int cur = activeIndex.load();
+    if (cur >= 0 && cur < (int) sampleParams.size())
+    {
+        sampleNorm[(std::size_t) cur]   = normGain.load();
+        sampleParams[(std::size_t) cur] = apvts.copyState();
+    }
+
+    // 新スロットは「今の設定」を引き継ぐ（差し替えて聴き比べるとき同条件で始められる）
+    sampleList.push_back (sb);
+    sampleNorm.push_back (1.0f);
+    sampleParams.push_back (apvts.copyState());
+
+    activeIndex.store ((int) sampleList.size() - 1);
     activeSample.store (sb.get());
     normGain.store (1.0f);
     sampleVersion.fetch_add (1);
+}
+
+juce::String OtoMadSamplerProcessor::getSampleName (int index) const
+{
+    if (index < 0 || index >= (int) sampleList.size() || sampleList[(std::size_t) index] == nullptr)
+        return {};
+    return juce::String (sampleList[(std::size_t) index]->name);
+}
+
+void OtoMadSamplerProcessor::selectSample (int index)
+{
+    if (index < 0 || index >= (int) sampleList.size())
+        return;
+
+    // 現在のノーマライズ倍率とパラメータを退避してから切り替える（サンプルごとに保持）
+    const int cur = activeIndex.load();
+    if (cur >= 0 && cur < (int) sampleParams.size())
+    {
+        sampleNorm[(std::size_t) cur]   = normGain.load();
+        sampleParams[(std::size_t) cur] = apvts.copyState();
+    }
+
+    activeIndex.store (index);
+    activeSample.store (sampleList[(std::size_t) index].get());
+    normGain.store (sampleNorm[(std::size_t) index]);
+
+    // そのスロットの設定へ丸ごと切り替える
+    if (index < (int) sampleParams.size() && sampleParams[(std::size_t) index].isValid())
+        apvts.replaceState (sampleParams[(std::size_t) index]);
+
+    sampleVersion.fetch_add (1);   // → キャッシュは再設定され、この素材で作り直される
+}
+
+void OtoMadSamplerProcessor::removeSample (int index)
+{
+    if (index < 0 || index >= (int) sampleList.size())
+        return;
+
+    // 再生中の可能性があるので解放せず graveyard に退避する
+    {
+        const juce::ScopedLock sl (graveyardLock);
+        sampleGraveyard.push_back (sampleList[(std::size_t) index]);
+    }
+    sampleList.erase (sampleList.begin() + index);
+    sampleNorm.erase (sampleNorm.begin() + index);
+    if (index < (int) sampleParams.size())
+        sampleParams.erase (sampleParams.begin() + index);
+
+    if (sampleList.empty())
+    {
+        activeIndex.store (-1);
+        activeSample.store (nullptr);
+        normGain.store (1.0f);
+        sampleVersion.fetch_add (1);
+        return;
+    }
+
+    const int next = juce::jlimit (0, (int) sampleList.size() - 1, index);
+    activeIndex.store (-1);      // selectSample の退避処理を走らせないため一旦無効化
+    selectSample (next);
+}
+
+void OtoMadSamplerProcessor::loadSampleFromMemory (juce::MemoryBlock bytes, juce::String displayName)
+{
+    const double sr = hostSampleRate.load();
+    loadPool.addJob ([this, bytes = std::move (bytes), displayName, sr]
+    {
+        if (auto sb = otomad::SampleLoader::loadFromMemory (bytes.getData(), bytes.getSize(),
+                                                            displayName, sr, formatManager))
+            publishSample (sb);
+    });
 }
 
 void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
@@ -609,6 +726,27 @@ void OtoMadSamplerProcessor::normalizeSample()
     sampleVersion.fetch_add (1);   // 波形表示を更新させる
 }
 
+void OtoMadSamplerProcessor::setBackgroundImageFromMemory (const void* data, std::size_t size)
+{
+    if (data == nullptr || size == 0)
+        return;
+    auto img = juce::ImageFileFormat::loadFrom (data, size);
+    if (! img.isValid())
+        return;
+
+    // 保存は PNG に統一（state 埋め込み・既定ファイルと同じ扱いにする）
+    juce::MemoryBlock png;
+    {
+        juce::MemoryOutputStream os (png, false);
+        juce::PNGImageFormat fmt;
+        if (! fmt.writeImageToStream (img, os))
+            return;
+    }
+    bgImage = img;
+    bgPng   = png;
+    appearanceVersion.fetch_add (1);
+}
+
 void OtoMadSamplerProcessor::setBackgroundImageFromFile (const juce::File& file)
 {
     juce::FileInputStream in (file);
@@ -636,31 +774,52 @@ void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto root = std::make_unique<juce::XmlElement> ("OtoMadState");
     root->setAttribute ("uiScalePct", (double) uiScalePct.load());   // UI 表示倍率
+    root->setAttribute ("editorW", editorW.load());                  // エディタサイズ
+    root->setAttribute ("editorH", editorH.load());
 
     if (auto apvtsXml = apvts.copyState().createXml())
         root->addChildElement (apvtsXml.release());
 
-    // サンプルを埋め込み保存（FLAC）＋パス（§3.9）
-    if (const auto* sb = activeSample.load())
+    // 読み込み済みサンプルを全て埋め込み保存（FLAC）＋パス（§3.9）。
+    // 切り替えて聴き比べるための機能なので、リスト全体を保存して次回もそのまま比較できるようにする。
+    if (! sampleList.empty())
     {
-        auto* se = root->createNewChildElement ("sample");
-        se->setAttribute ("name", juce::String (sb->name));
-        se->setAttribute ("path", juce::String (sb->path));
-        se->setAttribute ("normGain", (double) normGain.load());   // ノーマライズ倍率を保存
+        auto* list = root->createNewChildElement ("samples");
+        list->setAttribute ("active", activeIndex.load());
 
-        juce::MemoryBlock flacData;
-        float normScale = 1.0f;
-        if (otomad::SampleLoader::encodeOriginalToFlac (*sb, flacData, normScale))
+        for (std::size_t i = 0; i < sampleList.size(); ++i)
         {
-            se->setAttribute ("embedded", 1);
-            se->setAttribute ("format", "flac");
-            se->setAttribute ("srcSampleRate", sb->originalSampleRate);
-            se->setAttribute ("normScale", (double) normScale);
-            se->addTextElement (flacData.toBase64Encoding());
-        }
-        else
-        {
-            se->setAttribute ("embedded", 0);
+            const auto& sb = sampleList[i];
+            if (sb == nullptr) continue;
+
+            auto* se = list->createNewChildElement ("sample");
+            se->setAttribute ("name", juce::String (sb->name));
+            se->setAttribute ("path", juce::String (sb->path));
+            // 選択中のスロットは現在値、それ以外は退避済みの値
+            const float ng = ((int) i == activeIndex.load()) ? normGain.load() : sampleNorm[i];
+            se->setAttribute ("normGain", (double) ng);
+
+            // スロットごとのパラメータ（選択中は現在値）
+            const auto tree = ((int) i == activeIndex.load()) ? apvts.copyState()
+                                                              : (i < sampleParams.size() ? sampleParams[i] : juce::ValueTree());
+            if (tree.isValid())
+                if (auto px = tree.createXml())
+                    se->addChildElement (px.release());
+
+            juce::MemoryBlock flacData;
+            float normScale = 1.0f;
+            if (otomad::SampleLoader::encodeOriginalToFlac (*sb, flacData, normScale))
+            {
+                se->setAttribute ("embedded", 1);
+                se->setAttribute ("format", "flac");
+                se->setAttribute ("srcSampleRate", sb->originalSampleRate);
+                se->setAttribute ("normScale", (double) normScale);
+                se->addTextElement (flacData.toBase64Encoding());
+            }
+            else
+            {
+                se->setAttribute ("embedded", 0);
+            }
         }
     }
 
@@ -678,6 +837,8 @@ void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBy
 
     if (xml->hasAttribute ("uiScalePct"))
         uiScalePct.store ((float) xml->getDoubleAttribute ("uiScalePct", 100.0));
+    editorW.store (xml->getIntAttribute ("editorW", 0));
+    editorH.store (xml->getIntAttribute ("editorH", 0));
 
     juce::XmlElement* apvtsXml  = nullptr;
     juce::XmlElement* sampleXml = nullptr;
@@ -701,6 +862,29 @@ void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBy
         restoreSample (*sampleXml);
         // ノーマライズ倍率を復元（restoreSample→publishSample が 1.0 に戻すので後で上書き）
         normGain.store ((float) sampleXml->getDoubleAttribute ("normGain", 1.0));
+        if (! sampleNorm.empty()) sampleNorm.back() = normGain.load();
+    }
+
+    // 複数サンプル（新形式）。順に復元し、最後に保存時の選択スロットへ戻す。
+    if (auto* list = xml->getChildByName ("samples"))
+    {
+        for (auto* se : list->getChildWithTagNameIterator ("sample"))
+        {
+            restoreSample (*se);
+            if (! sampleNorm.empty())
+            {
+                const float ng = (float) se->getDoubleAttribute ("normGain", 1.0);
+                sampleNorm.back() = ng;
+                normGain.store (ng);
+            }
+            // スロットごとのパラメータ
+            if (! sampleParams.empty())
+                if (auto* px = se->getChildByName (apvts.state.getType()))
+                    sampleParams.back() = juce::ValueTree::fromXml (*px);
+        }
+        const int act = list->getIntAttribute ("active", (int) sampleList.size() - 1);
+        if (act >= 0 && act < (int) sampleList.size())
+            selectSample (act);
     }
 
     // 外観設定の復元（state に無ければコンストラクタで読んだ共通既定のまま）
@@ -719,6 +903,7 @@ void OtoMadSamplerProcessor::writeAppearance (juce::XmlElement& ae) const
 {
     ae.setAttribute ("mainColour", juce::String::toHexString ((int) mainColour.load()));
     ae.setAttribute ("bgOpacity", (double) bgOpacity.load());
+    ae.setAttribute ("panelOpacity", (double) panelOpacity.load());
     if (bgPng.getSize() > 0)
         ae.addTextElement (bgPng.toBase64Encoding());
 }
@@ -728,6 +913,7 @@ void OtoMadSamplerProcessor::readAppearance (const juce::XmlElement& ae)
     if (ae.hasAttribute ("mainColour"))
         mainColour.store ((juce::uint32) ae.getStringAttribute ("mainColour").getHexValue64());
     bgOpacity.store (juce::jlimit (0.0f, 1.0f, (float) ae.getDoubleAttribute ("bgOpacity", (double) bgOpacity.load())));
+    panelOpacity.store (juce::jlimit (0.1f, 1.0f, (float) ae.getDoubleAttribute ("panelOpacity", (double) panelOpacity.load())));
 
     const auto b64 = ae.getAllSubText().trim();
     bgImage = juce::Image();
@@ -748,11 +934,12 @@ void OtoMadSamplerProcessor::loadDefaultAppearance()
             readAppearance (*xml);
 }
 
-void OtoMadSamplerProcessor::applyBroadcastAppearance (juce::uint32 argb, float opacity,
+void OtoMadSamplerProcessor::applyBroadcastAppearance (juce::uint32 argb, float opacity, float panelOp,
                                                        const juce::MemoryBlock& png)
 {
     mainColour.store (argb);
     bgOpacity.store (juce::jlimit (0.0f, 1.0f, opacity));
+    panelOpacity.store (juce::jlimit (0.1f, 1.0f, panelOp));
     bgPng   = png;
     bgImage = png.getSize() > 0 ? juce::ImageFileFormat::loadFrom (png.getData(), png.getSize())
                                 : juce::Image();
@@ -770,11 +957,12 @@ void OtoMadSamplerProcessor::saveAppearanceAsDefault()
     // 即時ブロードキャスト: 同一プロセス内の全インスタンスへ現在の外観を反映
     const auto argb = mainColour.load();
     const auto op   = bgOpacity.load();
+    const auto pop  = panelOpacity.load();
     auto& hub = AppearanceHub::get();
     std::lock_guard<std::mutex> lk (hub.m);
     for (auto* inst : hub.instances)
         if (inst != this)
-            inst->applyBroadcastAppearance (argb, op, bgPng);
+            inst->applyBroadcastAppearance (argb, op, pop, bgPng);
 }
 
 void OtoMadSamplerProcessor::restoreSample (const juce::XmlElement& se)
@@ -822,7 +1010,11 @@ void OtoMadSamplerProcessor::restoreSample (const juce::XmlElement& se)
 //==============================================================================
 juce::AudioProcessorEditor* OtoMadSamplerProcessor::createEditor()
 {
+   #if OTOMAD_WEB_UI
+    return new OtoMadSamplerWebEditor (*this);   // 試作 (feature/web-ui)
+   #else
     return new OtoMadSamplerEditor (*this);
+   #endif
 }
 
 //==============================================================================

@@ -120,6 +120,7 @@ void Voice::startNote (const Pending& p) noexcept
     sourceReleaseTriggered = false;
     released = false;
     drainCounter = 0;
+    vibPhase = 0.0; vibElapsed = 0.0;   // ビブラートは発音ごとにやり直す
 
     varispeed.reset();
     wsola.reset();
@@ -229,8 +230,33 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
     // prePitchedSemi は sample に既に焼き込まれたシフト量。二重に掛からないよう差し引く。
     const float base = params.pitchSemi + params.pitchCents * 0.01f
                      + params.pitchBendSemi - (float) params.rootKey - prePitchedSemi;
+
+    // ビブラート: 発音から delay 経過後、fade をかけて depth（セント）へ到達する三角関数変調。
+    // 規約4に従い半音（対数）ドメインで base に足してから比へ変換する。
+    const bool   vibOn    = params.vibDepthCents > 0.01f;
+    const double vibInc   = juce::MathConstants<double>::twoPi * params.vibRateHz / sampleRate;
+    const double vibDelay = (double) params.vibDelayMs * 0.001 * sampleRate;
+    const double vibFade  = (double) params.vibFadeMs  * 0.001 * sampleRate;
+    const float  vibSemi  = params.vibDepthCents * 0.01f;
+
     for (int i = 0; i < n; ++i)
-        ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base) / 12.0f);
+    {
+        float mod = 0.0f;
+        if (vibOn)
+        {
+            const double t = vibElapsed - vibDelay;                 // delay 経過後の時間
+            if (t > 0.0)
+            {
+                const float amt = vibFade > 0.0 ? (float) std::min (1.0, t / vibFade) : 1.0f;
+                mod = amt * vibSemi * (float) std::sin (vibPhase);
+            }
+            vibPhase += vibInc;
+            if (vibPhase > juce::MathConstants<double>::twoPi)      // 位相は畳んで精度を保つ
+                vibPhase -= juce::MathConstants<double>::twoPi;
+        }
+        vibElapsed += 1.0;
+        ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base + mod) / 12.0f);
+    }
 
     for (int ch = 0; ch < nch; ++ch)
         scratchPtrs[(std::size_t) ch] = scratch[(std::size_t) ch].data();

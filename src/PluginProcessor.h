@@ -69,6 +69,13 @@ public:
     juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
     juce::MidiKeyboardState& getKeyboardState() noexcept    { return keyboardState; }
     const otomad::SampleBuffer* getActiveSample() const noexcept { return activeSample.load(); }
+
+    // 複数サンプルの保持と切り替え（メッセージスレッド）。差し替えて聴き比べるための機能。
+    int          getSampleCount() const noexcept { return (int) sampleList.size(); }
+    juce::String getSampleName (int index) const;
+    int          getActiveIndex() const noexcept { return activeIndex.load(); }
+    void         selectSample (int index);
+    void         removeSample (int index);
     int  getSampleVersion() const noexcept { return sampleVersion.load(); }
 
     //==========================================================================
@@ -77,8 +84,14 @@ public:
     void  setMainColourARGB (juce::uint32 argb) noexcept { mainColour.store (argb); appearanceVersion.fetch_add (1); }
     float getBgOpacity() const noexcept { return bgOpacity.load(); }
     void  setBgOpacity (float v) noexcept { bgOpacity.store (juce::jlimit (0.0f, 1.0f, v)); appearanceVersion.fetch_add (1); }
+    // パネルの不透明度（背景画像を透かすため）。0.1..1
+    float getPanelOpacity() const noexcept { return panelOpacity.load(); }
+    void  setPanelOpacity (float v) noexcept { panelOpacity.store (juce::jlimit (0.1f, 1.0f, v)); appearanceVersion.fetch_add (1); }
     const juce::Image& getBackgroundImage() const noexcept { return bgImage; }
     void  setBackgroundImageFromFile (const juce::File& file);
+    // Web UI 用: バイト列から背景画像を設定 / 保存済み PNG を取り出す（data URL 化して JS へ渡す）
+    void  setBackgroundImageFromMemory (const void* data, std::size_t size);
+    const juce::MemoryBlock& getBackgroundPng() const noexcept { return bgPng; }
     void  clearBackgroundImage() noexcept { bgImage = juce::Image(); bgPng.reset(); appearanceVersion.fetch_add (1); }
     int   getAppearanceVersion() const noexcept { return appearanceVersion.load(); }   // 変更検知用
 
@@ -101,6 +114,11 @@ public:
     // UI スケール（%）。50/100/125/150/200 を想定。state に保存して復元する。
     float getUiScalePct() const noexcept { return uiScalePct.load(); }
     void  setUiScalePct (float pct) noexcept { uiScalePct.store (juce::jlimit (25.0f, 400.0f, pct)); }
+
+    // エディタのサイズ（0 なら既定を使う）。state に保存して次回も同じ大きさで開く。
+    int  getEditorW() const noexcept { return editorW.load(); }
+    int  getEditorH() const noexcept { return editorH.load(); }
+    void setEditorSize (int w, int h) noexcept { editorW.store (w); editorH.store (h); }
 
     // GUI表示用: ピッチキャッシュ生成の進捗（0..1）と、生成中かどうか。
     // キャッシュ経路でないときは常に完了(1.0)/非ビジー扱い。
@@ -134,6 +152,9 @@ public:
     // メッセージスレッドから呼ぶ。バックグラウンドで読み込み、完了後にアトミック公開。
     void loadSampleFromFile (const juce::File& file);
 
+    // Web UI の D&D 用: バイト列から読み込む（WebView では実パスが取得できないため）。
+    void loadSampleFromMemory (juce::MemoryBlock bytes, juce::String displayName);
+
     // REAPERシフタのモード変更を反映（メッセージスレッド, suspend下で再設定＋レイテンシ再報告）。
     void reconfigureReaperMode();
 
@@ -151,7 +172,8 @@ private:
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
     void handleMidiMessage (const juce::MidiMessage& msg) noexcept;
     void updateVoiceParams() noexcept;
-    void publishSample (std::shared_ptr<const otomad::SampleBuffer> sb);   // graveyard+atomic公開
+    void publishSample (std::shared_ptr<const otomad::SampleBuffer> sb);   // 読み込み完了時に公開
+    void addSampleImpl (std::shared_ptr<const otomad::SampleBuffer> sb);   // メッセージスレッドで実処理
     void restoreSample (const juce::XmlElement& sampleXml);                // §3.9 復元
 
     juce::AudioProcessorValueTreeState apvts;
@@ -170,6 +192,7 @@ private:
     // 外観設定（メッセージスレッドで読み書き。bgImage/bgPng はGUI/保存でのみ触る）
     std::atomic<juce::uint32> mainColour { 0xff5cc8ff };   // 既定アクセント色
     std::atomic<float>        bgOpacity  { 0.25f };
+    std::atomic<float>        panelOpacity { 1.0f };
     std::atomic<int>          appearanceVersion { 0 };      // 色/画像が変わるたびに +1
     juce::Image               bgImage;                       // 表示用（デコード済み）
     juce::MemoryBlock         bgPng;                         // 保存用（PNGバイト列）
@@ -187,7 +210,8 @@ private:
     static juce::File defaultAppearanceFile();
 
     // 同一プロセス内の他インスタンスからの即時反映（メッセージスレッド）
-    void applyBroadcastAppearance (juce::uint32 argb, float opacity, const juce::MemoryBlock& png);
+    void applyBroadcastAppearance (juce::uint32 argb, float opacity, float panelOp,
+                                   const juce::MemoryBlock& png);
 
     // REAPER Shifter で Natural / Manual のときキャッシュ経路（Varispeed再生）を使う。
     // formant / stretch はキャッシュに焼き込むので可。Sync はテンポ依存で動的なので除外。
@@ -206,8 +230,17 @@ private:
     std::atomic<int>   sampleVersion { 0 };
     std::atomic<float> normGain { 1.0f };   // ノーマライズ倍率（gain とは別に掛かる）
     std::atomic<float> uiScalePct { 100.0f };   // UI 表示倍率（%）
+    std::atomic<int>   editorW { 0 }, editorH { 0 };   // エディタサイズ（0=既定）
     std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleGraveyard;
     juce::CriticalSection graveyardLock;
+
+    // 読み込み済みサンプルのリスト（メッセージスレッド専用）。切り替えて聴き比べるため複数保持する。
+    // ノーマライズ倍率はサンプルごとに持つ。
+    // パラメータもスロットごとに保持し、切り替えるとその設定に丸ごと切り替わる。
+    std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleList;
+    std::vector<float>          sampleNorm;
+    std::vector<juce::ValueTree> sampleParams;
+    std::atomic<int>            activeIndex { -1 };
 
     // RTアクセス用にキャッシュしたパラメータ atomic
     std::atomic<float>* pPitchSemi   = nullptr;
@@ -239,6 +272,10 @@ private:
     std::atomic<float>* pPhaseLock   = nullptr;
     std::atomic<float>* pReaperMode    = nullptr;
     std::atomic<float>* pReaperSubMode = nullptr;
+    std::atomic<float>* pVibDepth      = nullptr;
+    std::atomic<float>* pVibRate       = nullptr;
+    std::atomic<float>* pVibDelay      = nullptr;
+    std::atomic<float>* pVibFade       = nullptr;
 
     double hostBpm = 120.0;
     bool   hostBpmValid = false;
@@ -250,5 +287,7 @@ private:
     juce::String          latestVersionStr;
     juce::CriticalSection updateStrLock;
 
+    // 背景スレッドから callAsync でメッセージスレッドへ渡すため（破棄後の実行を防ぐ）
+    JUCE_DECLARE_WEAK_REFERENCEABLE (OtoMadSamplerProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };

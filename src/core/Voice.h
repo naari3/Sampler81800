@@ -34,6 +34,12 @@ public:
         float gainLin       = 1.0f;
         float pitchBendSemi = 0.0f;
         VarispeedEngine::Quality quality = VarispeedEngine::Quality::Hermite;
+
+        // ビブラート（発音から delay 経過後、fade をかけて depth に到達する）
+        float vibDepthCents = 0.0f;   // 振幅（セント）。0 で無効
+        float vibRateHz     = 5.0f;
+        float vibDelayMs    = 0.0f;   // 発音から効き始めるまで
+        float vibFadeMs     = 0.0f;   // 最大振幅に達するまで（ADSR の A 相当）
     };
 
     struct EngineControl
@@ -119,6 +125,10 @@ private:
     int    pendingOn  = -1;   // adsr.noteOn() 発火までの残りサンプル（-1=発火済/無し）
     int    pendingOff = -1;   // adsr.noteOff() 発火までの残りサンプル
     long   drainCounter = 0;
+
+    // ビブラートはボイス固有の状態（位相・発音からの経過）。規約9に従い共有しない。
+    double vibPhase   = 0.0;
+    double vibElapsed = 0.0;   // 発音からの経過サンプル数
     double sampleRate = 44100.0;
 
     SourceReader        reader;

@@ -1,0 +1,476 @@
+#include "WebEditor.h"
+#include "BinaryData.h"
+#include "core/Params.h"
+#include "core/SampleLoader.h"
+
+namespace
+{
+    namespace P = otomad::params;
+
+    // JS 側 getSliderState(name) の name。APVTS のパラメータIDをそのまま使う。
+    const char* const kSliderParams[] =
+    {
+        P::pitchSemi, P::pitchCents, P::octave, P::rootKey, P::gain,
+        P::attack, P::decay, P::sustain, P::release,
+        P::sampleStart, P::sampleEnd,
+        P::portaTime, P::portaCurve, P::maxVoices, P::bendRange,
+        P::stretchAmount, P::formant,
+        P::vibDepth, P::vibRate, P::vibDelay, P::vibFade,
+    };
+
+    // getComboBoxState(name)
+    const char* const kComboParams[] =
+    {
+        P::algorithm, P::durationMode, P::syncLength, P::portaMode,
+    };
+
+    // getToggleState(name)
+    const char* const kToggleParams[] = { P::phaseLock };
+
+    juce::String mimeForPath (const juce::String& path)
+    {
+        // テキスト系は charset を明示しないと日本語が化ける
+        if (path.endsWithIgnoreCase (".html")) return "text/html; charset=utf-8";
+        if (path.endsWithIgnoreCase (".js"))   return "text/javascript; charset=utf-8";
+        if (path.endsWithIgnoreCase (".css"))  return "text/css; charset=utf-8";
+        if (path.endsWithIgnoreCase (".png"))  return "image/png";
+        return "application/octet-stream";
+    }
+
+    // "/style.css" → BinaryData の "style_css" を引く。
+    // juce_add_binary_data の識別子はハイフン等が「除去」される（juce-index.js → juceindex_js）ため、
+    // originalFilenames と照合する。resolvedName には実際に引いたファイル名を返す（MIME 判定用）。
+    const char* findBinaryResource (const juce::String& path, int& sizeOut, juce::String& resolvedName)
+    {
+        auto name = path.upToFirstOccurrenceOf ("?", false, false)
+                        .upToFirstOccurrenceOf ("#", false, false)
+                        .fromLastOccurrenceOf ("/", false, false);
+        if (name.isEmpty())
+            name = "index.html";   // ルート "/" は index.html を返す
+
+        for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+            if (name.equalsIgnoreCase (BinaryData::originalFilenames[i]))
+            {
+                resolvedName = name;
+                return BinaryData::getNamedResource (BinaryData::namedResourceList[i], sizeOut);
+            }
+        return nullptr;
+    }
+}
+
+//==============================================================================
+OtoMadSamplerWebEditor::OtoMadSamplerWebEditor (OtoMadSamplerProcessor& p)
+    : AudioProcessorEditor (&p), processor (p)
+{
+    // プラグインではホスト実行ファイル基準の既定ユーザーデータフォルダ（Program Files 等）に
+    // 書き込めず WebView2 の生成に失敗する。失敗すると JUCE は黙って IE バックエンドへ
+    // フォールバックしてしまうので、書き込める場所を明示する。
+    const auto userData = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getChildFile ("OtoMadSampler-WebView2");
+    userData.createDirectory();
+
+    auto options = juce::WebBrowserComponent::Options{}
+                      .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
+                      .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
+                                                   .withUserDataFolder (userData)
+                                                   .withBackgroundColour (juce::Colour (0xff23272b)))
+                      .withNativeIntegrationEnabled()
+                      .withResourceProvider ([this] (const auto& url) { return getResource (url); });
+
+    // --- リレー（WebBrowserComponent 生成前に Options へ登録する必要がある） ---
+    for (auto* id : kSliderParams)
+    {
+        auto b = std::make_unique<SliderBound>();
+        b->relay = std::make_unique<juce::WebSliderRelay> (id);
+        options  = options.withOptionsFrom (*b->relay);
+        sliders.push_back (std::move (b));
+    }
+    for (auto* id : kComboParams)
+    {
+        auto b = std::make_unique<ComboBound>();
+        b->relay = std::make_unique<juce::WebComboBoxRelay> (id);
+        options  = options.withOptionsFrom (*b->relay);
+        combos.push_back (std::move (b));
+    }
+    for (auto* id : kToggleParams)
+    {
+        auto b = std::make_unique<ToggleBound>();
+        b->relay = std::make_unique<juce::WebToggleButtonRelay> (id);
+        options  = options.withOptionsFrom (*b->relay);
+        toggles.push_back (std::move (b));
+    }
+
+    // --- ネイティブ関数（パラメータでは表せないもの） ---
+    auto fn = [this] (auto method)
+    {
+        return [this, method] (const juce::Array<juce::var>& args,
+                               juce::WebBrowserComponent::NativeFunctionCompletion complete)
+        { (this->*method) (args, std::move (complete)); };
+    };
+
+    options = options
+        .withNativeFunction ("loadSample",    fn (&OtoMadSamplerWebEditor::nfLoadSample))
+        .withNativeFunction ("getWaveform",   fn (&OtoMadSamplerWebEditor::nfGetWaveform))
+        .withNativeFunction ("normalize",     fn (&OtoMadSamplerWebEditor::nfNormalize))
+        .withNativeFunction ("detectRoot",    fn (&OtoMadSamplerWebEditor::nfDetectRoot))
+        .withNativeFunction ("note",          fn (&OtoMadSamplerWebEditor::nfNote))
+        .withNativeFunction ("reaperModes",   fn (&OtoMadSamplerWebEditor::nfReaperModes))
+        .withNativeFunction ("setReaperMode", fn (&OtoMadSamplerWebEditor::nfSetReaperMode))
+        .withNativeFunction ("openReleases",  fn (&OtoMadSamplerWebEditor::nfOpenReleases))
+        .withNativeFunction ("resetParam",    fn (&OtoMadSamplerWebEditor::nfResetParam))
+        .withNativeFunction ("getAppearance", fn (&OtoMadSamplerWebEditor::nfGetAppearance))
+        .withNativeFunction ("setAppearance", fn (&OtoMadSamplerWebEditor::nfSetAppearance))
+        .withNativeFunction ("setBgImage",    fn (&OtoMadSamplerWebEditor::nfSetBgImage))
+        .withNativeFunction ("saveAppearanceDefault", fn (&OtoMadSamplerWebEditor::nfSaveAppearanceDefault))
+        .withNativeFunction ("getSamples",    fn (&OtoMadSamplerWebEditor::nfGetSamples))
+        .withNativeFunction ("selectSample",  fn (&OtoMadSamplerWebEditor::nfSelectSample))
+        .withNativeFunction ("removeSample",  fn (&OtoMadSamplerWebEditor::nfRemoveSample));
+
+    web = std::make_unique<juce::WebBrowserComponent> (options);
+    addAndMakeVisible (*web);
+
+    // リレー生成後にパラメータへアタッチ（値の双方向同期＋ホストのジェスチャ通知）
+    auto& apvts = processor.getAPVTS();
+    for (std::size_t i = 0; i < sliders.size(); ++i)
+        if (auto* param = apvts.getParameter (kSliderParams[i]))
+            sliders[i]->attach = std::make_unique<juce::WebSliderParameterAttachment> (
+                                     *param, *sliders[i]->relay, apvts.undoManager);
+    for (std::size_t i = 0; i < combos.size(); ++i)
+        if (auto* param = apvts.getParameter (kComboParams[i]))
+            combos[i]->attach = std::make_unique<juce::WebComboBoxParameterAttachment> (
+                                    *param, *combos[i]->relay, apvts.undoManager);
+    for (std::size_t i = 0; i < toggles.size(); ++i)
+        if (auto* param = apvts.getParameter (kToggleParams[i]))
+            toggles[i]->attach = std::make_unique<juce::WebToggleButtonParameterAttachment> (
+                                     *param, *toggles[i]->relay, apvts.undoManager);
+
+    web->goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
+
+    processor.checkForUpdatesAsync();
+    startTimerHz (10);
+
+    // 全パネル（SAMPLE / ENV+PITCH / ENGINE+REAPER / KEYBOARD）が収まる既定サイズ。
+    // 小さすぎると鍵盤が切れるので下限も設ける。
+    // 幅が狭いと ENGINE のセレクトが折り返して縦に伸び、鍵盤が切れる。
+    // 折り返さない幅を下限にして、既定は全パネルが収まるサイズにする。
+    setResizable (true, true);
+    setResizeLimits (860, 660, 2400, 1600);
+
+    // 前回のサイズがあれば復元（無ければ既定）
+    const int sw = processor.getEditorW(), sh = processor.getEditorH();
+    setSize (sw >= 860 ? sw : 890, sh >= 660 ? sh : 755);
+}
+
+OtoMadSamplerWebEditor::~OtoMadSamplerWebEditor() { stopTimer(); }
+
+//==============================================================================
+std::optional<juce::WebBrowserComponent::Resource>
+OtoMadSamplerWebEditor::getResource (const juce::String& url) const
+{
+    int size = 0;
+    juce::String resolved;
+    if (const auto* data = findBinaryResource (url, size, resolved))
+    {
+        const auto* bytes = reinterpret_cast<const std::byte*> (data);
+        // MIME は「解決後のファイル名」から決める。ルート "/" のまま判定すると
+        // application/octet-stream になり、WebView2 が表示ではなくダウンロード扱いにしてしまう。
+        return juce::WebBrowserComponent::Resource {
+            std::vector<std::byte> (bytes, bytes + size), mimeForPath (resolved) };
+    }
+    return std::nullopt;
+}
+
+//==============================================================================
+// JS: loadSample(base64, name) — D&D / ファイル選択で得たバイト列を読み込む
+void OtoMadSamplerWebEditor::nfLoadSample (const juce::Array<juce::var>& args,
+                                           juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() < 1)
+    { complete (false); return; }
+
+    // JS の btoa() は「標準」base64。MemoryBlock::fromBase64Encoding は JUCE 独自形式なので使えない。
+    juce::MemoryBlock mb;
+    {
+        juce::MemoryOutputStream out (mb, false);
+        if (! juce::Base64::convertFromBase64 (out, args[0].toString()))
+        { complete (false); return; }
+    }
+    if (mb.getSize() == 0)
+    { complete (false); return; }
+
+    const auto name = args.size() > 1 ? args[1].toString() : juce::String ("sample");
+    processor.loadSampleFromMemory (std::move (mb), name);
+    complete (true);
+}
+
+// JS: getWaveform() — 波形ピーク（min,max を平坦化した配列）とメタ情報を返す
+void OtoMadSamplerWebEditor::nfGetWaveform (const juce::Array<juce::var>&,
+                                            juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto* obj = new juce::DynamicObject();
+    const auto* sb = processor.getActiveSample();
+
+    if (sb != nullptr && ! sb->peaks.empty())
+    {
+        juce::Array<juce::var> flat;
+        flat.ensureStorageAllocated ((int) sb->peaks.size() * 2);
+        for (const auto& mm : sb->peaks) { flat.add (mm.first); flat.add (mm.second); }
+
+        obj->setProperty ("peaks",   flat);
+        obj->setProperty ("name",    juce::String (sb->name));
+        obj->setProperty ("seconds", sb->sampleRate > 0.0 ? (double) sb->numSamples / sb->sampleRate : 0.0);
+        obj->setProperty ("normGain", processor.getNormGain());
+    }
+    obj->setProperty ("version", processor.getSampleVersion());
+    complete (juce::var (obj));
+}
+
+void OtoMadSamplerWebEditor::nfNormalize (const juce::Array<juce::var>&,
+                                          juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    processor.normalizeSample();
+    complete (true);
+}
+
+void OtoMadSamplerWebEditor::nfDetectRoot (const juce::Array<juce::var>&,
+                                           juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (processor.detectAndSetRoot());
+}
+
+// JS: note(midiNote, isOn) — 画面鍵盤
+void OtoMadSamplerWebEditor::nfNote (const juce::Array<juce::var>& args,
+                                     juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() >= 2)
+    {
+        const int  n  = juce::jlimit (0, 127, (int) args[0]);
+        const bool on = (bool) args[1];
+        auto& ks = processor.getKeyboardState();
+        if (on) ks.noteOn  (1, n, 0.9f);
+        else    ks.noteOff (1, n, 0.0f);
+    }
+    complete (true);
+}
+
+// JS: reaperModes() — モード名/サブモード名の一覧（動的なのでパラメータでは表せない）
+void OtoMadSamplerWebEditor::nfReaperModes (const juce::Array<juce::var>&,
+                                            juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto* obj = new juce::DynamicObject();
+    juce::Array<juce::var> modes;
+    const auto names = processor.getReaperModeNames();
+    for (const auto& n : names) modes.add (n);
+
+    const int cur = (int) processor.getAPVTS().getRawParameterValue (P::reaperMode)->load();
+    juce::Array<juce::var> subs;
+    for (const auto& s : processor.getReaperSubModeNames (cur)) subs.add (s);
+
+    obj->setProperty ("available", processor.isReaperAvailable());
+    obj->setProperty ("modes", modes);
+    obj->setProperty ("subs",  subs);
+    obj->setProperty ("mode",  cur);
+    obj->setProperty ("sub",   (int) processor.getAPVTS().getRawParameterValue (P::reaperSubMode)->load());
+    complete (juce::var (obj));
+}
+
+// JS: setReaperMode(mode, sub)
+void OtoMadSamplerWebEditor::nfSetReaperMode (const juce::Array<juce::var>& args,
+                                              juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto setInt = [this] (const char* id, int v)
+    {
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (processor.getAPVTS().getParameter (id)))
+            *p = v;
+    };
+    if (args.size() >= 1) setInt (P::reaperMode,    (int) args[0]);
+    if (args.size() >= 2) setInt (P::reaperSubMode, (int) args[1]);
+    complete (true);
+}
+
+void OtoMadSamplerWebEditor::nfOpenReleases (const juce::Array<juce::var>&,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    OtoMadSamplerProcessor::getReleasesUrl().launchInDefaultBrowser();
+    complete (true);
+}
+
+// JS: resetParam(id) — ダブルクリックでパラメータを既定値へ戻す。
+// 既定値はパラメータ自身が持っているので、JS 側に持たせず C++ で解決する。
+void OtoMadSamplerWebEditor::nfResetParam (const juce::Array<juce::var>& args,
+                                           juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() >= 1)
+        if (auto* param = processor.getAPVTS().getParameter (args[0].toString()))
+        {
+            param->beginChangeGesture();
+            param->setValueNotifyingHost (param->getDefaultValue());
+            param->endChangeGesture();
+            complete (true);
+            return;
+        }
+    complete (false);
+}
+
+// JS: getSamples() — 読み込み済みサンプル名の一覧と選択中インデックス
+void OtoMadSamplerWebEditor::nfGetSamples (const juce::Array<juce::var>&,
+                                           juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto* o = new juce::DynamicObject();
+    juce::Array<juce::var> names;
+    for (int i = 0; i < processor.getSampleCount(); ++i)
+        names.add (processor.getSampleName (i));
+    o->setProperty ("names",  names);
+    o->setProperty ("active", processor.getActiveIndex());
+    complete (juce::var (o));
+}
+
+void OtoMadSamplerWebEditor::nfSelectSample (const juce::Array<juce::var>& args,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() >= 1)
+        processor.selectSample ((int) args[0]);
+    complete (true);
+}
+
+void OtoMadSamplerWebEditor::nfRemoveSample (const juce::Array<juce::var>& args,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() >= 1)
+        processor.removeSample ((int) args[0]);
+    complete (true);
+}
+
+// JS: getAppearance() — 色 / 背景の不透明度 / 背景画像(data URL)
+void OtoMadSamplerWebEditor::nfGetAppearance (const juce::Array<juce::var>&,
+                                              juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto* o = new juce::DynamicObject();
+    const juce::Colour c (processor.getMainColourARGB());
+    o->setProperty ("colour",  "#" + c.toDisplayString (false));   // #rrggbb
+    o->setProperty ("opacity", processor.getBgOpacity());
+    o->setProperty ("panel",   processor.getPanelOpacity());
+
+    const auto& png = processor.getBackgroundPng();
+    if (png.getSize() > 0)
+    {
+        juce::MemoryOutputStream b64;
+        juce::Base64::convertToBase64 (b64, png.getData(), png.getSize());
+        o->setProperty ("bg", "data:image/png;base64," + b64.toString());
+    }
+    complete (juce::var (o));
+}
+
+// JS: setAppearance(colourHex, opacity)
+void OtoMadSamplerWebEditor::nfSetAppearance (const juce::Array<juce::var>& args,
+                                              juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    if (args.size() >= 1)
+    {
+        const auto hex = args[0].toString().removeCharacters ("#");
+        if (hex.isNotEmpty())
+            processor.setMainColourARGB (juce::Colour::fromString ("ff" + hex).getARGB());
+    }
+    if (args.size() >= 2)
+        processor.setBgOpacity ((float) (double) args[1]);
+    if (args.size() >= 3)
+        processor.setPanelOpacity ((float) (double) args[2]);
+    complete (true);
+}
+
+// JS: setBgImage(base64 | null) — null / 空でクリア
+void OtoMadSamplerWebEditor::nfSetBgImage (const juce::Array<juce::var>& args,
+                                           juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    const auto b64 = args.size() >= 1 ? args[0].toString() : juce::String();
+    if (b64.isEmpty())
+    {
+        processor.clearBackgroundImage();
+        complete (true);
+        return;
+    }
+
+    juce::MemoryBlock mb;
+    {
+        juce::MemoryOutputStream out (mb, false);
+        if (! juce::Base64::convertFromBase64 (out, b64))
+        { complete (false); return; }
+    }
+    processor.setBackgroundImageFromMemory (mb.getData(), mb.getSize());
+    complete (true);
+}
+
+void OtoMadSamplerWebEditor::nfSaveAppearanceDefault (const juce::Array<juce::var>&,
+                                                      juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    processor.saveAppearanceAsDefault();
+    complete (true);
+}
+
+//==============================================================================
+void OtoMadSamplerWebEditor::timerCallback()
+{
+    processor.serviceCache();
+
+    // REAPER モード/サブモードが変わったらエンジンを再設定する。
+    // パラメータを変えるだけでは反映されず、選択と実際のモードがズレる（SoundTouch のままになる）。
+    {
+        auto& apvts = processor.getAPVTS();
+        const int rm  = (int) apvts.getRawParameterValue (P::reaperMode)->load();
+        const int rsm = (int) apvts.getRawParameterValue (P::reaperSubMode)->load();
+        if (rm != lastReaperMode || rsm != lastReaperSubMode)
+        {
+            lastReaperMode = rm; lastReaperSubMode = rsm;
+            processor.reconfigureReaperMode();
+        }
+    }
+
+    if (web == nullptr)
+        return;
+
+    // サンプルが差し替わったら JS 側へ通知（JS が getWaveform を呼び直す）
+    const int ver = processor.getSampleVersion();
+    if (ver != lastSampleVersion)
+    {
+        lastSampleVersion = ver;
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("version", ver);
+        web->emitEventIfBrowserIsVisible ("sampleChanged", juce::var (o));
+    }
+
+    // 外観（色/背景）が変わったら通知（他インスタンスからのブロードキャストや state 復元を反映）
+    const int av = processor.getAppearanceVersion();
+    if (av != lastAppearanceVersion)
+    {
+        lastAppearanceVersion = av;
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("version", av);
+        web->emitEventIfBrowserIsVisible ("appearanceChanged", juce::var (o));
+    }
+
+    // 状態（キャッシュ進捗・REAPERモード名・更新有無）。内容が変わったときだけ送る。
+    auto* s = new juce::DynamicObject();
+    s->setProperty ("cacheBusy",     processor.isCacheBusy());
+    s->setProperty ("cacheProgress", processor.getCacheProgress());
+    s->setProperty ("reaper",        processor.isReaperAvailable() ? processor.getReaperModeText() : juce::String());
+    s->setProperty ("fallback",      processor.isEngineFallbackActive());
+    s->setProperty ("updateAvail",   processor.isUpdateAvailable());
+    s->setProperty ("latest",        processor.getLatestVersion());
+    s->setProperty ("version",       OtoMadSamplerProcessor::getCurrentVersion());
+
+    const juce::var status (s);
+    const auto json = juce::JSON::toString (status, true);
+    if (json != lastStatusJson)
+    {
+        lastStatusJson = json;
+        web->emitEventIfBrowserIsVisible ("status", status);
+    }
+}
+
+void OtoMadSamplerWebEditor::resized()
+{
+    if (web != nullptr)
+        web->setBounds (getLocalBounds());
+
+    processor.setEditorSize (getWidth(), getHeight());   // 次回同じ大きさで開く
+}

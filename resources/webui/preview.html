@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>OtoMadSampler — preview</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!--
+  デザイン確認用のプレビュー（プラグインには含めない・ビルド対象外）。
+  JUCE バックエンドが無い環境で見た目だけを検証するため、window.__JUCE__ をモックする。
+-->
+<div id="mount"></div>
+<script>
+// ---- JUCE バックエンドのモック ----
+const listeners = {};
+window.__JUCE__ = {
+  initialisationData: { __juce__functions: [], __juce__sliders: [], __juce__toggles: [], __juce__comboBoxes: [] },
+  backend: {
+    addEventListener: (id, fn) => { (listeners[id] ||= []).push (fn); },
+    emitEvent: () => {},
+  },
+};
+</script>
+<script type="module">
+// index.html の body を取り込んでから、モック state で描画する
+const html = await (await fetch ("index.html")).text();
+const doc  = new DOMParser().parseFromString (html, "text/html");
+document.body.innerHTML = doc.body.innerHTML;
+
+const DEFAULTS = {
+  pitchSemi: [0, -48, 48], pitchCents: [0, -100, 100], octave: [0, -4, 4], rootKey: [60, 0, 127],
+  gain: [0, -60, 12], attack: [4, 0, 5000], decay: [100, 0, 5000], sustain: [1, 0, 1],
+  release: [9, 0, 5000], sampleStart: [0, 0, 1], sampleEnd: [1, 0, 1],
+  portaTime: [0, 0, 200], portaCurve: [0, -1, 1], maxVoices: [8, 1, 16], bendRange: [2, 0, 48],
+  stretchAmount: [1, .25, 4], formant: [0, -12, 12],
+};
+const NOTE = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const fmtMs = v => v >= 1000 ? (v/1000).toFixed(2)+" s" : v.toFixed(0)+" ms";
+const FMT = { pitchSemi:v=>v.toFixed(0), pitchCents:v=>v.toFixed(1),
+  octave:v=>(v>0?"+":"")+v.toFixed(0), rootKey:v=>NOTE[((v%12)+12)%12]+(Math.floor(v/12)-1),
+  gain:v=>v.toFixed(1)+" dB", attack:fmtMs, decay:fmtMs, release:fmtMs, portaTime:fmtMs,
+  sustain:v=>v.toFixed(3), sampleStart:v=>v.toFixed(3), portaCurve:v=>v.toFixed(2),
+  maxVoices:v=>v.toFixed(0), bendRange:v=>v.toFixed(0), stretchAmount:v=>v.toFixed(2)+"x", formant:v=>v.toFixed(1) };
+
+const R = 21, CIRC = 2*Math.PI*R, SWEEP = CIRC*.75, NS = "http://www.w3.org/2000/svg";
+for (const knob of document.querySelectorAll (".knob[data-relay]")) {
+  const id = knob.dataset.relay, d = DEFAULTS[id] || [0,0,1];
+  const p = (d[0]-d[1])/(d[2]-d[1]);
+  const svg = document.createElementNS (NS, "svg");
+  svg.setAttribute ("viewBox", "0 0 52 52");
+  svg.innerHTML =
+    '<defs><radialGradient id="knobFace" cx="50%" cy="32%" r="70%">' +
+      '<stop offset="0%" stop-color="#464e57"/><stop offset="62%" stop-color="#1d242b"/>' +
+      '<stop offset="100%" stop-color="#0e1216"/></radialGradient></defs>' +
+    '<circle class="track" cx="26" cy="26" r="'+R+'" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="'+SWEEP+' '+CIRC+'" transform="rotate(135 26 26)"/>' +
+    '<circle class="fill" cx="26" cy="26" r="'+R+'" fill="none" stroke-width="4" stroke-linecap="round" stroke-dasharray="'+(SWEEP*p)+' '+CIRC+'" transform="rotate(135 26 26)"/>' +
+    '<circle class="cap" cx="26" cy="26" r="15.5"/>' +
+    '<line class="ptr" x1="26" y1="15" x2="26" y2="20.5" transform="rotate('+(-135+270*p)+' 26 26)"/>';
+  knob.appendChild (svg);
+  const out = knob.parentElement.querySelector (".knob-value");
+  if (out) out.textContent = (FMT[id]||String)(d[0]);
+}
+
+// セレクトにダミー項目
+const CH = { "sel-algorithm":["Varispeed","WSOLA","Phase Vocoder","Granular","Stretch Library","REAPER Shifter"],
+  "sel-durationMode":["Natural","Sync","Manual"], "sel-syncLength":["1/4","1/2","1","2","4"],
+  "sel-portaMode":["Off","Legato","Always"], "sel-rmode":["élastique 3.3.3 Pro"], "sel-rsub":["Monophonic"] };
+for (const [k, arr] of Object.entries (CH)) {
+  const s = document.getElementById (k); if (!s) continue;
+  arr.forEach ((t,i) => { const o=document.createElement("option"); o.value=i; o.textContent=t; s.appendChild(o); });
+}
+document.getElementById ("reaper-info").textContent = "élastique 3.3.3 Pro / Monophonic  (modes=16, subs=12)";
+document.getElementById ("status").textContent = "v0.1.1";
+document.getElementById ("sample-name").textContent = "イキスギィ.mp3";
+
+// 鍵盤
+const keysEl = document.getElementById ("keys");
+const LOW=36, HIGH=96, isBlack=n=>[1,3,6,8,10].includes(((n%12)+12)%12);
+const whites=[]; for(let n=LOW;n<=HIGH;++n) if(!isBlack(n)) whites.push(n);
+const wpc=100/whites.length;
+whites.forEach((n,i)=>{const d=document.createElement("div");d.className="key white"+(n===60?" root":"");
+  d.style.left=(i*wpc)+"%";d.style.width=wpc+"%";keysEl.appendChild(d);});
+for(let n=LOW;n<=HIGH;++n){ if(!isBlack(n))continue; const below=whites.filter(w=>w<n).length;
+  const d=document.createElement("div");d.className="key black";
+  d.style.left=(below*wpc-wpc*.3)+"%";d.style.width=(wpc*.6)+"%";keysEl.appendChild(d);}
+
+// キャンバス（波形はダミー波形、ADSRは既定値）
+function sized(c){const r=c.getBoundingClientRect();c.width=Math.round(r.width);c.height=Math.round(r.height);}
+const wave=document.getElementById("wave"); sized(wave);
+{
+  const ctx=wave.getContext("2d"), w=wave.width, h=wave.height, mid=h/2, half=h*.44;
+  ctx.strokeStyle="rgba(255,255,255,.045)";
+  for(let i=1;i<8;++i){const x=Math.round(w*i/8)+.5;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
+  for(const fy of [.25,.75]){const y=Math.round(h*fy)+.5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+  ctx.strokeStyle="rgba(255,255,255,.10)";ctx.beginPath();ctx.moveTo(0,Math.round(mid)+.5);ctx.lineTo(w,Math.round(mid)+.5);ctx.stroke();
+  const s01=.08,e01=.92;
+  ctx.fillStyle="rgba(0,0,0,.55)";ctx.fillRect(0,0,w*s01,h);ctx.fillRect(w*e01,0,w-w*e01,h);
+  const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,"#2f8fc4");g.addColorStop(.5,"#7fd0ff");g.addColorStop(1,"#2f8fc4");
+  ctx.strokeStyle=g;ctx.beginPath();
+  for(let x=0;x<w;++x){const t=x/w;
+    const env=Math.abs(Math.sin(t*Math.PI*5))*Math.exp(-t*.8)*(0.35+0.65*Math.abs(Math.sin(t*Math.PI*23)));
+    const a=Math.min(1,env*1.5);
+    ctx.moveTo(x+.5,mid-a*half);ctx.lineTo(x+.5,mid+a*half);}
+  ctx.stroke();
+  ctx.strokeStyle="#ff9f4a";ctx.fillStyle="#ff9f4a";
+  for(const p of [s01,e01]){const xr=Math.round(w*p)+.5;
+    ctx.beginPath();ctx.moveTo(xr,0);ctx.lineTo(xr,h);ctx.stroke();
+    ctx.fillRect(xr-3,0,6,6);ctx.fillRect(xr-3,h-6,6,6);}
+}
+const adsr=document.getElementById("adsr"); sized(adsr);
+{
+  const ctx=adsr.getContext("2d"), w=adsr.width, h=adsr.height;
+  const sc=ms=>Math.sqrt(Math.max(0,ms));
+  const wa=sc(4),wd=sc(100),wr=sc(9),sum=wa+wd+wr,sF=.22,av=w*(1-sF);
+  const xa=av*wa/sum,xd=av*wd/sum,xr2=av*wr/sum,xs=w*sF,yTop=4,yBot=h-4,sy=yBot-(yBot-yTop)*1;
+  const ax=xa,dx=ax+xd,sx=dx+xs,rx=sx+xr2;
+  ctx.strokeStyle="rgba(255,255,255,.045)";
+  for(let i=1;i<4;++i){const y=Math.round(h*i/4)+.5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+  ctx.strokeStyle="rgba(255,255,255,.12)";ctx.setLineDash([2,3]);
+  for(const x of [ax,dx,sx]){ctx.beginPath();ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,h);ctx.stroke();}
+  ctx.setLineDash([]);
+  const gr=ctx.createLinearGradient(0,yTop,0,yBot);gr.addColorStop(0,"rgba(75,180,245,.35)");gr.addColorStop(1,"rgba(75,180,245,.04)");
+  ctx.beginPath();ctx.moveTo(0,yBot);ctx.lineTo(ax,yTop);ctx.lineTo(dx,sy);ctx.lineTo(sx,sy);ctx.lineTo(rx,yBot);ctx.closePath();
+  ctx.fillStyle=gr;ctx.fill();
+  ctx.beginPath();ctx.moveTo(0,yBot);ctx.lineTo(ax,yTop);ctx.lineTo(dx,sy);ctx.lineTo(sx,sy);ctx.lineTo(rx,yBot);
+  ctx.strokeStyle="#7fd0ff";ctx.lineWidth=2;ctx.lineJoin="round";ctx.stroke();
+  for(const p of [[ax,yTop],[dx,sy],[rx,yBot]]){ctx.beginPath();ctx.arc(p[0],p[1],4.5,0,Math.PI*2);
+    ctx.fillStyle="#0e1114";ctx.fill();ctx.lineWidth=2;ctx.strokeStyle="#7fd0ff";ctx.stroke();}
+}
+document.getElementById("drop-hint").hidden = true;
+document.getElementById("lbl-start").textContent="0.080";
+document.getElementById("lbl-end").textContent="0.920";
+document.getElementById("lbl-len").textContent="2.31 s";
+</script>
+</body>
+</html>
