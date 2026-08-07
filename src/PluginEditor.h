@@ -232,6 +232,15 @@ private:
 };
 
 //==============================================================================
+// UI スケール用のコンテンツ層。全コントロールをここに入れ、これを transform で拡大縮小する
+// （エディタ自身の transform はホスト用に予約されているため, JUCE の作法）。
+struct ScaledContent : juce::Component
+{
+    std::function<void (juce::Graphics&)> onPaint;
+    void paint (juce::Graphics& g) override { if (onPaint) onPaint (g); }
+};
+
+//==============================================================================
 class OtoMadSamplerEditor : public juce::AudioProcessorEditor,
                             private juce::Timer
 {
@@ -245,6 +254,16 @@ public:
 private:
     void timerCallback() override;
     void applyMainColour();   // メインカラーを LookAndFeel と各コンポーネントに反映
+
+    static constexpr int kBaseW = 860, kBaseH = 772;   // 基準(100%)サイズ
+    static constexpr int kNumScales = 6;
+    static constexpr float kScales[kNumScales] = { 50.0f, 75.0f, 100.0f, 125.0f, 150.0f, 200.0f };
+    float uiScale = 1.0f;
+    ScaledContent  content;                            // 全コントロールの親（スケール対象）
+    juce::ComboBox scaleBox;                           // 50/100/125/150/200%
+    void applyUiScale (float pct);
+    void layoutContent();                              // content 内を基準サイズでレイアウト
+    void paintContent (juce::Graphics&);               // 背景・ロゴ（基準座標で描画）
 
     using SliderAttach = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttach = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -294,10 +313,8 @@ private:
     Knob* kPTime = nullptr; Knob* kPCurve = nullptr; Knob* kGroup = nullptr;
     Knob* kMaxV = nullptr;  Knob* kBend = nullptr;
     Knob* kStretch = nullptr; Knob* kFormant = nullptr;
-    Knob* kTailPct = nullptr; Knob* kTailMs = nullptr;
     Combo* cInterp = nullptr; Combo* cPMode = nullptr; Combo* cPShape = nullptr; Combo* cPoly = nullptr;
     Combo* cAlgo = nullptr; Combo* cDur = nullptr; Combo* cSync = nullptr;
-    Combo* cTailMode = nullptr; Combo* cTailSync = nullptr;
 
     // REAPER モード/サブモードは動的な名前リストなので手動管理のコンボにする
     juce::ComboBox rModeBox, rSubBox;

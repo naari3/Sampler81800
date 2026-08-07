@@ -38,11 +38,6 @@ inline constexpr const char* formant       = "formant";
 inline constexpr const char* reaperMode    = "reaperMode";
 inline constexpr const char* reaperSubMode = "reaperSubMode";
 inline constexpr const char* phaseLock     = "phaseLock";
-// Tail: ノートオフを遅らせて発音長を伸ばす（端切れ対策）。単位は % / ms / Sync。
-inline constexpr const char* tailMode      = "tailMode";
-inline constexpr const char* tailPercent   = "tailPercent";
-inline constexpr const char* tailMs        = "tailMs";
-inline constexpr const char* tailSyncDiv   = "tailSyncDiv";
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -107,16 +102,6 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperMode, 1 },    "REAPER Mode",    0, 127,   0));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 32767, 0));
     layout.add (std::make_unique<AudioParameterBool>  (ParameterID { phaseLock, 1 }, "Phase Lock", true));
-
-    // Tail（ノートオフ遅延で発音長を伸ばす。端切れ対策）。単位を選び、その値だけ離鍵を遅らせる。
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { tailMode, 1 }, "Tail Mode",
-                    StringArray { "Off", "%", "ms", "Sync" }, 0));
-    layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { tailPercent, 1 }, "Tail %",
-                    NormalisableRange<float> (0.0f, 100.0f, 1.0f), 20.0f));      // 末尾から削る割合（20=20%削る）
-    layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { tailMs, 1 }, "Tail ms",
-                    NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 60.0f));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { tailSyncDiv, 1 }, "Tail Sync",
-                    StringArray { "1/128", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1/1" }, 4));   // 既定 1/8
 
     return layout;
 }

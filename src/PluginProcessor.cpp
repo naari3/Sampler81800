@@ -61,12 +61,6 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
     pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
-    pTailMode      = apvts.getRawParameterValue (otomad::params::tailMode);
-    pTailPercent   = apvts.getRawParameterValue (otomad::params::tailPercent);
-    pTailMs        = apvts.getRawParameterValue (otomad::params::tailMs);
-    pTailSyncDiv   = apvts.getRawParameterValue (otomad::params::tailSyncDiv);
-
-    pendingOff.fill (-1);
 
     loadDefaultAppearance();   // 全インスタンス共通の外観既定（あれば）。state復元があれば後で上書きされる。
 
@@ -96,9 +90,6 @@ void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
     lastReportedLatency = voices.getCurrentLatency();      // 既定(Varispeed)=0
     setLatencySamples (lastReportedLatency);
-
-    transportSample = 0;         // Tail 用クロック/状態をリセット
-    pendingOff.fill (-1);
 
     prepared.store (true);   // ここで state 復元の有無が確定（setStateInformation は prepare より前）
 }
@@ -183,9 +174,6 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         setLatencySamples (lat);
     }
 
-    // Tail: 期限が来た遅延ノートオフを発火（ブロック粒度。数ms未満の誤差は許容）
-    fireDueTailOffs (transportSample);
-
     // ---- §2.2 : MIDIイベント位置でブロックを分割してレンダリング ----
     int pos = 0;
     for (const auto meta : midi)
@@ -196,103 +184,12 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             renderSlice (buffer, pos, t - pos);
             pos = t;
         }
-        handleMidiMessage (meta.getMessage(), transportSample + t);
+        handleMidiMessage (meta.getMessage());
     }
 
     const int tail = buffer.getNumSamples() - pos;
     if (tail > 0)
         renderSlice (buffer, pos, tail);
-
-    transportSample += buffer.getNumSamples();
-}
-
-// Tail 自動ノートオフのうち、発火予定サンプルがこのブロック開始以前になったものを発火する。
-void OtoMadSamplerProcessor::fireDueTailOffs (std::int64_t blockStart) noexcept
-{
-    for (int n = 0; n < kNumNotes; ++n)
-        if (pendingOff[(std::size_t) n] >= 0 && pendingOff[(std::size_t) n] <= blockStart)
-        {
-            voices.noteOff (n);
-            pendingOff[(std::size_t) n] = -1;
-        }
-}
-
-// このノートを鳴らしたときの「再生の長さ」（出力SRサンプル数）を発音時点で見積もる。
-// キャッシュ経路は事前レンダ済みバッファ長が正確。それ以外はトリム長×ピッチ/長さ制御で近似。
-std::int64_t OtoMadSamplerProcessor::samplePlayLengthSamples (int note) const noexcept
-{
-    const auto* sb = activeSample.load();
-    if (sb == nullptr || sb->numSamples <= 0)
-        return 0;
-
-    // キャッシュ経路（REAPER Shifter Natural/Manual）: 事前レンダ済みバッファ長が正確
-    if (useCachePath())
-    {
-        const int semi = juce::jlimit (otomad::PitchCache::kMin, otomad::PitchCache::kMax,
-                                       note - (int) pRootKey->load() + (int) pPitchSemi->load()
-                                         + 12 * (int) pOctave->load());
-        if (const auto* c = pitchCache.lookup (semi))
-            return c->numSamples;
-    }
-
-    const double s = pSampleStart->load(), e = pSampleEnd->load();
-    double len = std::max (0.0, e - s) * (double) sb->numSamples;   // トリム長（出力SR, 等速）
-
-    const int algo = (int) pAlgorithm->load();
-    if (algo == 0)   // Varispeed: ピッチで再生速度が変わる（長さは 1/ratio）
-    {
-        const double effSemi = pPitchSemi->load() + pPitchCents->load() * 0.01
-                             + 12.0 * pOctave->load()
-                             + (double) (note - (int) pRootKey->load());
-        const double ratio = std::pow (2.0, effSemi / 12.0);
-        if (ratio > 1.0e-6) len /= ratio;
-    }
-    else if ((int) pDurationMode->load() == 2)   // 長さ保持系の Manual: stretch 倍
-    {
-        len *= (double) pStretch->load();
-    }
-    return (std::int64_t) len;
-}
-
-// Tail: サンプル末尾から固定量（ms/%/Sync）を削った自動オフ位置（発音からのオフセット）。-1=無効。
-// 再生長は発音時点で判るのでレイテンシは増えない。
-std::int64_t OtoMadSamplerProcessor::computeTailAutoOffOffset (int note) const noexcept
-{
-    const int mode = (int) pTailMode->load();   // 0=Off,1=%,2=ms,3=Sync
-    if (mode <= 0)
-        return -1;
-
-    const std::int64_t playLen = samplePlayLengthSamples (note);
-    if (playLen <= 0)
-        return -1;
-
-    const double sr = hostSampleRate.load();
-    std::int64_t cut = 0;
-    if (mode == 1)        // % : Tail% は「削る割合」。削る量 = 再生長 × Tail%/100
-        cut = (std::int64_t) ((double) playLen * (double) pTailPercent->load() * 0.01);
-    else if (mode == 2)   // ms
-        cut = (std::int64_t) ((double) pTailMs->load() * 0.001 * sr);
-    else                  // Sync（テンポが無ければ ms にフォールバック）
-    {
-        if (! hostBpmValid || hostBpm <= 0.0)
-            cut = (std::int64_t) ((double) pTailMs->load() * 0.001 * sr);
-        else
-        {
-            static constexpr double beatsTable[] = { 4.0/128, 4.0/64, 4.0/32, 4.0/16, 4.0/8, 4.0/4, 4.0/2, 4.0/1 };
-            const int idx = juce::jlimit (0, 7, (int) pTailSyncDiv->load());
-            cut = (std::int64_t) (beatsTable[idx] * (60.0 / hostBpm) * sr);
-        }
-    }
-    if (cut <= 0)
-        return -1;
-
-    // Release を考慮: リリースは自動オフ後に伸びるので、その分だけ早めにオフして
-    // リリースが「削り位置」でちょうど終わるようにする（削る量＝実際の発音終端に一致）。
-    const std::int64_t rel = (std::int64_t) ((double) pRelease->load() * 0.001 * sr);
-
-    // 5ms 下限は撤去（とりあえず）。削りすぎて 0 以下になったら発音開始で即オフ。
-    const std::int64_t off = playLen - cut - rel;
-    return off > 0 ? off : 0;
 }
 
 void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
@@ -309,19 +206,12 @@ void OtoMadSamplerProcessor::renderSlice (juce::AudioBuffer<float>& buffer,
     voices.render (ptrs, numCh, numSamples);
 }
 
-void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg, std::int64_t absSample) noexcept
+void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg) noexcept
 {
     if (msg.isNoteOn())
     {
         const int   note = msg.getNoteNumber();
         const float vel  = msg.getFloatVelocity();
-
-        // Tail: サンプル末尾から固定量を削った位置で自動オフを予約。-1なら無効。
-        if (note >= 0 && note < kNumNotes)
-        {
-            const std::int64_t off = computeTailAutoOffOffset (note);
-            pendingOff[(std::size_t) note] = off >= 0 ? absSample + off : -1;
-        }
         const float s = pSampleStart->load(), e = pSampleEnd->load();
         const bool  snap = pSnap->load() > 0.5f;
 
@@ -346,10 +236,7 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg, st
     }
     else if (msg.isNoteOff())
     {
-        const int note = msg.getNoteNumber();
-        if (note >= 0 && note < kNumNotes)
-            pendingOff[(std::size_t) note] = -1;   // 実際の離鍵が来たら自動オフ予約は取り消し
-        voices.noteOff (note);
+        voices.noteOff (msg.getNoteNumber());
     }
     else if (msg.isPitchWheel())
     {
@@ -359,7 +246,6 @@ void OtoMadSamplerProcessor::handleMidiMessage (const juce::MidiMessage& msg, st
     else if (msg.isAllNotesOff() || msg.isAllSoundOff())
     {
         voices.allNotesOff();
-        pendingOff.fill (-1);   // 保留中の Tail オフも破棄
     }
 }
 
@@ -749,6 +635,7 @@ void OtoMadSamplerProcessor::setBackgroundImageFromFile (const juce::File& file)
 void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto root = std::make_unique<juce::XmlElement> ("OtoMadState");
+    root->setAttribute ("uiScalePct", (double) uiScalePct.load());   // UI 表示倍率
 
     if (auto apvtsXml = apvts.copyState().createXml())
         root->addChildElement (apvtsXml.release());
@@ -788,6 +675,9 @@ void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBy
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr)
         return;
+
+    if (xml->hasAttribute ("uiScalePct"))
+        uiScalePct.store ((float) xml->getDoubleAttribute ("uiScalePct", 100.0));
 
     juce::XmlElement* apvtsXml  = nullptr;
     juce::XmlElement* sampleXml = nullptr;

@@ -37,10 +37,6 @@ static juce::String helpForParam (const juce::String& id)
     if (id == syncLength)    return u ("同期長（Duration=Sync 時）");
     if (id == snapZeroCross) return u ("トリム端をゼロクロスへ吸着（プチ防止）");
     if (id == phaseLock)     return u ("位相ロック（Phase Vocoder）");
-    if (id == tailMode)      return u ("Tail：サンプル末尾から固定量を削る（端切れ対策・レイテンシ0）。Off/%/ms/Sync");
-    if (id == tailPercent)   return u ("Tail 量：末尾から削る割合（20=20%削る, Tail=% 時）");
-    if (id == tailMs)        return u ("Tail 量：末尾から削る時間 ms（Tail=ms 時）");
-    if (id == tailSyncDiv)   return u ("Tail 量：末尾から削るテンポ音価（Tail=Sync 時）");
     return {};
 }
 
@@ -116,13 +112,8 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     cDur    = &addCombo (P::durationMode,  "Duration", { "Natural", "Sync", "Manual" });
     cSync   = &addCombo (P::syncLength,    "Sync",   { "1/4", "1/2", "1", "2", "4" });
 
-    cTailMode = &addCombo (P::tailMode, "Tail", { "Off", "%", "ms", "Sync" });
-    cTailSync = &addCombo (P::tailSyncDiv, "T.Sync", { "1/128", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1/1" });
-    kTailPct  = &addKnob  (P::tailPercent, "Tail%", rotary);
-    kTailMs   = &addKnob  (P::tailMs,      "TailMs", rotary);
-
-    addAndMakeVisible (snapButton);
-    snapButton.setTooltip (helpForParam (P::snapZeroCross));
+    // Snap ZC は常時ON運用なので UI には出さない（パラメータは規約#12に従い存続）
+    addChildComponent (snapButton);
     snapAttach = std::make_unique<ButtonAttach> (processor.getAPVTS(), P::snapZeroCross, snapButton);
     addAndMakeVisible (phaseLockButton);
     phaseLockButton.setTooltip (helpForParam (P::phaseLock));
@@ -166,11 +157,31 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     addChildComponent (updateButton);
     processor.checkForUpdatesAsync();   // 起動時に一度、背景で確認
 
+    // UI スケール選択（50/100/125/150/200%）
+    scaleBox.addItem ("50%",  1); scaleBox.addItem ("75%",  2); scaleBox.addItem ("100%", 3);
+    scaleBox.addItem ("125%", 4); scaleBox.addItem ("150%", 5); scaleBox.addItem ("200%", 6);
+    scaleBox.setTooltip (juce::String (juce::CharPointer_UTF8 ("UI 表示倍率")));
+    scaleBox.onChange = [this]
+    {
+        const int idx = juce::jlimit (0, kNumScales - 1, scaleBox.getSelectedId() - 1);
+        applyUiScale (kScales[idx]);
+    };
+    addAndMakeVisible (scaleBox);
+
+    // 全コントロールをスケール用コンテンツ層へ移し替える（エディタ直下ではなく content の子にする）。
+    {
+        juce::Array<juce::Component*> kids (getChildren());
+        for (auto* c : kids)
+            content.addChildComponent (c);   // 可視状態は保持したまま親を content に
+    }
+    content.onPaint = [this] (juce::Graphics& g) { paintContent (g); };
+    addAndMakeVisible (content);
+
     applyMainColour();
     lastAppearanceVersion = processor.getAppearanceVersion();
 
     startTimerHz (8);
-    setSize (860, 834);   // ADSRブロック(表示+4ノブ) + Tail 行ぶん高く
+    applyUiScale (processor.getUiScalePct());   // 保存された倍率で初期化（setSize もここで）
 }
 
 OtoMadSamplerEditor::~OtoMadSamplerEditor()
@@ -300,12 +311,6 @@ void OtoMadSamplerEditor::timerCallback()
     enableCombo (cSync,    dur == 1);                 // Sync Length は Sync のみ
     enableComp  (phaseLockButton, isPV);              // Phase Lock は Phase Vocoder のみ
 
-    // Tail: モードに応じて有効な単位コントロールだけを使えるようにする
-    const int tailMode = (int) apvts.getRawParameterValue (P::tailMode)->load();   // 0=Off,1=%,2=ms,3=Sync
-    enableKnob  (kTailPct,  tailMode == 1);
-    enableKnob  (kTailMs,   tailMode == 2);
-    enableCombo (cTailSync, tailMode == 3);
-
     const bool rc = isReaper && processor.isReaperAvailable();
     enableComp (rModeBox, rc); enableComp (rSubBox, rc);
     rModeLbl.setAlpha (rc ? 1.0f : 0.4f); rSubLbl.setAlpha (rc ? 1.0f : 0.4f);
@@ -368,6 +373,12 @@ OtoMadSamplerEditor::Combo& OtoMadSamplerEditor::addCombo (const juce::String& p
 //==============================================================================
 void OtoMadSamplerEditor::paint (juce::Graphics& g)
 {
+    g.fillAll (juce::Colour (0xff1b1b1f));   // 実描画は content 側（スケール対象）
+}
+
+void OtoMadSamplerEditor::paintContent (juce::Graphics& g)
+{
+    juce::Rectangle<int> full (0, 0, kBaseW, kBaseH);
     g.fillAll (juce::Colour (0xff1b1b1f));
 
     // 背景画像（設定した不透明度で全面にフィット。子コンポーネントの背面に描かれる）
@@ -375,11 +386,11 @@ void OtoMadSamplerEditor::paint (juce::Graphics& g)
     if (bg.isValid())
     {
         g.setOpacity (processor.getBgOpacity());
-        g.drawImage (bg, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
+        g.drawImage (bg, full.toFloat(), juce::RectanglePlacement::fillDestination);
         g.setOpacity (1.0f);
     }
 
-    auto header = getLocalBounds().removeFromTop (82).reduced (8, 4);
+    auto header = full.removeFromTop (82).reduced (8, 4);
     if (logo.isValid())
         g.drawImageWithin (logo, header.getX(), header.getY(), header.getWidth(), header.getHeight(),
                            juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid
@@ -393,7 +404,27 @@ void OtoMadSamplerEditor::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+void OtoMadSamplerEditor::applyUiScale (float pct)
+{
+    uiScale = juce::jlimit (0.25f, 4.0f, pct / 100.0f);
+    processor.setUiScalePct (pct);
+
+    int id = 3; float best = 1.0e9f;   // 既定は 100%
+    for (int i = 0; i < kNumScales; ++i)
+    { const float d = std::abs (pct - kScales[i]); if (d < best) { best = d; id = i + 1; } }
+    if (scaleBox.getSelectedId() != id) scaleBox.setSelectedId (id, juce::dontSendNotification);
+
+    setSize (juce::roundToInt (kBaseW * uiScale), juce::roundToInt (kBaseH * uiScale));  // → resized()
+}
+
 void OtoMadSamplerEditor::resized()
+{
+    content.setBounds (0, 0, kBaseW, kBaseH);
+    content.setTransform (juce::AffineTransform::scale (uiScale));
+    layoutContent();
+}
+
+void OtoMadSamplerEditor::layoutContent()
 {
     auto place = [] (Knob* k, juce::Rectangle<int> a)
     {
@@ -406,16 +437,17 @@ void OtoMadSamplerEditor::resized()
         c->box.setBounds (a.removeFromTop (24));
     };
 
-    // 設定オーバーレイは全面
-    settingsOverlay.setBounds (getLocalBounds());
-    // 設定ボタン（右上隅）＋ 更新バナー（その左, 更新あり時のみ表示）
-    settingsButton.setBounds (getWidth() - 34, 6, 28, 24);
-    updateButton.setBounds (getWidth() - 34 - 132, 6, 128, 24);
-    // ヘッダ右側にキャッシュ進捗バー（ロゴは左寄せなので右側が空いている。設定ボタンを避ける）
-    cacheBar.setBounds (getLocalBounds().removeFromTop (82).removeFromRight (240).reduced (14, 30).withTrimmedRight (30));
+    // 設定オーバーレイは全面（基準座標）
+    settingsOverlay.setBounds (0, 0, kBaseW, kBaseH);
+    // 設定ボタン（右上隅）＋ 更新バナー（その左）＋ スケール選択（さらに左）
+    settingsButton.setBounds (kBaseW - 34, 6, 28, 24);
+    scaleBox.setBounds (kBaseW - 34 - 86, 6, 80, 24);   // "200%" が切れない幅
+    updateButton.setBounds (kBaseW - 34 - 86 - 132, 6, 128, 24);
+    // ヘッダ右側にキャッシュ進捗バー（ロゴは左寄せなので右側が空いている。ボタン群を避ける）
+    cacheBar.setBounds (juce::Rectangle<int> (0, 0, kBaseW, 82).removeFromRight (300).reduced (14, 30).withTrimmedRight (110));
 
-    auto r = getLocalBounds();
-    r.removeFromTop (82);   // ロゴヘッダ（1.5倍）
+    juce::Rectangle<int> r (0, 0, kBaseW, kBaseH);
+    r.removeFromTop (82);   // ロゴヘッダ
 
     auto waveArea = r.removeFromTop (124).reduced (8, 4);
     waveform.setBounds (waveArea);
@@ -456,16 +488,15 @@ void OtoMadSamplerEditor::resized()
     statusLabel.setBounds (r.removeFromBottom (20).reduced (10, 0));
 
     auto grid = r.reduced (8, 4);
-    const int rowH = grid.getHeight() / 4;   // A/D/S/R・Voices/Bend は ADSR ブロックへ移動したので4行
+    const int rowH = grid.getHeight() / 3;   // 3行（row1 / row3 / row4）
     auto rowRect = [&] { return grid.removeFromTop (rowH); };
     auto cell = [] (juce::Rectangle<int>& row, int cols) { return row.removeFromLeft (row.getWidth() / cols).reduced (4); };
 
-    // row1: Semi Cent Oct Root Gain Snap
+    // row1: Semi Cent Oct Root Gain
     {
-        auto row = rowRect(); int c = 6;
+        auto row = rowRect(); int c = 5;
         place (kSemi, cell (row, c)); place (kCents, cell (row, c - 1)); place (kOct, cell (row, c - 2));
         place (kRoot, cell (row, c - 3)); place (kGain, cell (row, c - 4));
-        snapButton.setBounds (row.reduced (4).withTrimmedTop (16));
     }
     // row3: Glide [Porta] + カーブGUI（ドラッグで編集, 残り幅いっぱい）
     {
@@ -487,14 +518,6 @@ void OtoMadSamplerEditor::resized()
         placeRawCombo (rModeLbl, rModeBox, cell (row, c - 5));
         placeRawCombo (rSubLbl,  rSubBox,  cell (row, c - 6));
         phaseLockButton.setBounds (row.reduced (4).withTrimmedTop (16));
-    }
-    // row5: [Tail mode][Tail%][TailMs][T.Sync]  （残りは空き）
-    {
-        auto row = grid; int c = 8;
-        placeCombo (cTailMode, cell (row, c));
-        place (kTailPct, cell (row, c - 1));
-        place (kTailMs,  cell (row, c - 2));
-        placeCombo (cTailSync, cell (row, c - 3));
     }
 }
 

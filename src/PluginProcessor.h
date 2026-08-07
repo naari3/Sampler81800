@@ -98,6 +98,10 @@ public:
              + ", subs=" + juce::String (voices.getReaperSubModeCount()) + ")";
     }
 
+    // UI スケール（%）。50/100/125/150/200 を想定。state に保存して復元する。
+    float getUiScalePct() const noexcept { return uiScalePct.load(); }
+    void  setUiScalePct (float pct) noexcept { uiScalePct.store (juce::jlimit (25.0f, 400.0f, pct)); }
+
     // GUI表示用: ピッチキャッシュ生成の進捗（0..1）と、生成中かどうか。
     // キャッシュ経路でないときは常に完了(1.0)/非ビジー扱い。
     bool  isCacheBusy() const noexcept
@@ -145,7 +149,7 @@ private:
     void timerCallback() override { serviceCache(); }   // UI非依存でキャッシュ駆動
 
     void renderSlice (juce::AudioBuffer<float>& buffer, int startSample, int numSamples) noexcept;
-    void handleMidiMessage (const juce::MidiMessage& msg, std::int64_t absSample) noexcept;
+    void handleMidiMessage (const juce::MidiMessage& msg) noexcept;
     void updateVoiceParams() noexcept;
     void publishSample (std::shared_ptr<const otomad::SampleBuffer> sb);   // graveyard+atomic公開
     void restoreSample (const juce::XmlElement& sampleXml);                // §3.9 復元
@@ -201,6 +205,7 @@ private:
     std::atomic<const otomad::SampleBuffer*> activeSample { nullptr };
     std::atomic<int>   sampleVersion { 0 };
     std::atomic<float> normGain { 1.0f };   // ノーマライズ倍率（gain とは別に掛かる）
+    std::atomic<float> uiScalePct { 100.0f };   // UI 表示倍率（%）
     std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleGraveyard;
     juce::CriticalSection graveyardLock;
 
@@ -234,10 +239,6 @@ private:
     std::atomic<float>* pPhaseLock   = nullptr;
     std::atomic<float>* pReaperMode    = nullptr;
     std::atomic<float>* pReaperSubMode = nullptr;
-    std::atomic<float>* pTailMode      = nullptr;
-    std::atomic<float>* pTailPercent   = nullptr;
-    std::atomic<float>* pTailMs        = nullptr;
-    std::atomic<float>* pTailSyncDiv   = nullptr;
 
     double hostBpm = 120.0;
     bool   hostBpmValid = false;
@@ -248,14 +249,6 @@ private:
     std::atomic<bool> updateAvailable    { false };
     juce::String          latestVersionStr;
     juce::CriticalSection updateStrLock;
-
-    // Tail（発音の最大長で自動ノートオフ＝ノート長を削る）用（オーディオスレッド専用・固定長, RT安全）。
-    static constexpr int kNumNotes = 128;
-    std::int64_t transportSample = 0;                 // processBlock 先頭の絶対サンプル位置
-    std::array<std::int64_t, kNumNotes> pendingOff { };   // 自動オフ予定の絶対サンプル（-1=無し）
-    void fireDueTailOffs (std::int64_t blockStart) noexcept;   // 期限が来た自動ノートオフを発火
-    std::int64_t samplePlayLengthSamples (int note) const noexcept;   // 発音の再生長（出力SRサンプル）
-    std::int64_t computeTailAutoOffOffset (int note) const noexcept;  // 末尾から固定量削る自動オフ位置（-1=無効）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerProcessor)
 };
