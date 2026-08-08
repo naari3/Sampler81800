@@ -1,0 +1,963 @@
+// OtoMadSampler Web UI
+// JUCE の WebSliderRelay / WebComboBoxRelay / WebToggleButtonRelay でパラメータを双方向バインドし、
+// 波形・D&D・鍵盤などは getNativeFunction / backend イベントで橋渡しする。
+
+const statusEl = document.getElementById ("status");
+const errEl    = document.getElementById ("err");
+
+// status は毎tick backend に上書きされるので、診断は専用要素に出す
+function note (msg) { if (errEl) errEl.textContent = msg; }
+function showError (msg) { note ("JS error: " + msg); }
+window.addEventListener ("error", (e) => showError (e.message));
+window.addEventListener ("unhandledrejection", (e) => showError (String (e.reason)));
+
+// ---- アクセント色（設定で変えられるので変数で持つ） ----
+let ACCENT = "#4bb4f5", ACCENT_HI = "#7fd0ff", ACCENT_LO = "#1d7fbe";
+
+const hexToRgb = (h) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec (h.trim());
+  const v = m ? parseInt (m[1], 16) : 0x4bb4f5;
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+};
+const rgbToHex = (r, g, b) =>
+  "#" + [r, g, b].map (x => Math.round (Math.min (255, Math.max (0, x))).toString (16).padStart (2, "0")).join ("");
+const shade = (hex, t) => {   // t>0 で白へ / t<0 で黒へ
+  const [r, g, b] = hexToRgb (hex);
+  const to = t > 0 ? 255 : 0, a = Math.abs (t);
+  return rgbToHex (r + (to - r) * a, g + (to - g) * a, b + (to - b) * a);
+};
+const rgba = (hex, a) => { const [r, g, b] = hexToRgb (hex); return "rgba(" + r + "," + g + "," + b + "," + a + ")"; };
+
+function applyAccent (hex) {
+  ACCENT = hex; ACCENT_HI = shade (hex, .35); ACCENT_LO = shade (hex, -.35);
+  const root = document.documentElement.style;
+  root.setProperty ("--accent", ACCENT);
+  root.setProperty ("--accent-lo", ACCENT_LO);
+  if (window.drawWave) window.drawWave();
+  if (window.drawAdsr) window.drawAdsr();
+  if (window.drawVib)  window.drawVib();
+}
+
+// ---- 表示フォーマット ----
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const noteName = (n) => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor (n / 12) - 1);
+const fmtMs = (v) => v >= 1000 ? (v / 1000).toFixed (2) + " s" : v.toFixed (0) + " ms";
+
+const FMT = {
+  pitchSemi:  v => v.toFixed (0),
+  pitchCents: v => v.toFixed (1),
+  octave:     v => (v > 0 ? "+" : "") + v.toFixed (0),
+  rootKey:    v => noteName (Math.round (v)),
+  gain:       v => v.toFixed (1) + " dB",
+  attack: fmtMs, decay: fmtMs, release: fmtMs, portaTime: fmtMs,
+  sustain:       v => v.toFixed (3),
+  sampleStart:   v => v.toFixed (3),
+  sampleEnd:     v => v.toFixed (3),
+  portaCurve:    v => v.toFixed (2),
+  maxVoices:     v => v.toFixed (0),
+  glideGroupMs:  fmtMs,
+  bendRange:     v => v.toFixed (0),
+  stretchAmount: v => v.toFixed (2) + "x",
+  formant:       v => v.toFixed (1),
+  vibDepth:      v => v.toFixed (1) + " ct",
+  vibRate:       v => v.toFixed (2) + " Hz",
+  vibDelay: fmtMs, vibFade: fmtMs,
+};
+
+// 各リレーの state をここに集約（他のUI部品からも参照する）
+const S = {};
+
+import ("./juce-index.js").then ((juce) => {
+  const { getSliderState, getToggleState, getComboBoxState, getNativeFunction } = juce;
+
+  // DOM 参照は最初にまとめて取る。
+  // （ノブの初期 render() が drawAdsr()/drawWave() を呼ぶため、後で const 宣言すると
+  //   temporal dead zone で例外になり、以降の初期化が全部止まってしまう）
+  const waveCanvas = document.getElementById ("wave");
+  const waveWrap   = document.getElementById ("wave-wrap");
+  const dropHint   = document.getElementById ("drop-hint");
+  const nameEl     = document.getElementById ("sample-name");
+  const adsrCanvas = document.getElementById ("adsr");
+  const keysEl     = document.getElementById ("keys");
+  const fileInput  = document.getElementById ("file-input");
+  const selRMode   = document.getElementById ("sel-rmode");
+  const selRSub    = document.getElementById ("sel-rsub");
+
+  // 描画関数から参照される状態も、同じ理由（TDZ）でここで初期化しておく
+  const vibCanvas = document.getElementById ("vib");
+  const C = {};                              // コンボの state（グレーアウト判定で参照）
+  let reaperAvailable = false;
+  const keyEls = new Map();                  // MIDIノート → 鍵盤要素
+  let peaks = null, normGain = 1;            // 波形ピーク
+  let view = { start: 0, end: 1 };           // 波形の表示窓（全体に対する割合）
+  let pendingLoadName = null, pendingLoadTimer = 0;   // 非同期デコードの完了待ち
+  let sampleSeconds = 0;                              // 読み込んだ素材の長さ（秒）
+
+  // パラメータ state の取得（無ければ生成）。
+  // ノブが画面に無いパラメータ（sampleEnd など）もコードから使うので、ここで必ず作る。
+  const st = (id) => S[id] || (S[id] = getSliderState (id));
+  for (const id of ["sampleStart", "sampleEnd", "rootKey", "attack", "decay", "sustain", "release"])
+    st (id);
+
+  // ネイティブ関数も先に取得しておく（後段の初期化から参照されるため）
+  const nfLoadSample    = getNativeFunction ("loadSample");
+  const nfGetWaveform   = getNativeFunction ("getWaveform");
+  const nfNormalize     = getNativeFunction ("normalize");
+  const nfDetectRoot    = getNativeFunction ("detectRoot");
+  const nfNote          = getNativeFunction ("note");
+  const nfReaperModes   = getNativeFunction ("reaperModes");
+  const nfSetReaperMode = getNativeFunction ("setReaperMode");
+  const nfOpenReleases  = getNativeFunction ("openReleases");
+  const nfResetParam    = getNativeFunction ("resetParam");
+  const nfGetAppearance = getNativeFunction ("getAppearance");
+  const nfSetAppearance = getNativeFunction ("setAppearance");
+  const nfSetBgImage    = getNativeFunction ("setBgImage");
+  const nfSaveAppearanceDefault = getNativeFunction ("saveAppearanceDefault");
+  const nfGetSamples    = getNativeFunction ("getSamples");
+  const nfSelectSample  = getNativeFunction ("selectSample");
+  const nfRemoveSample  = getNativeFunction ("removeSample");
+
+  //================================================================ knobs
+  // SVG で描く（conic-gradient より線端・アンチエイリアスが綺麗）。
+  // 円弧: 半径 R の円周を dasharray で切り、開始を左下 135° に回転させて 270° ぶん使う。
+  const R = 21, CIRC = 2 * Math.PI * R, SWEEP = CIRC * 0.75;   // 270°
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function buildKnobSvg (knob) {
+    const svg = document.createElementNS (SVG_NS, "svg");
+    svg.setAttribute ("viewBox", "0 0 52 52");
+    svg.innerHTML =
+      '<defs><radialGradient id="knobFace" cx="50%" cy="32%" r="70%">' +
+        '<stop offset="0%" stop-color="#464e57"/><stop offset="62%" stop-color="#1d242b"/>' +
+        '<stop offset="100%" stop-color="#0e1216"/></radialGradient></defs>' +
+      '<circle class="track" cx="26" cy="26" r="' + R + '" fill="none" stroke-width="4"' +
+        ' stroke-linecap="round" stroke-dasharray="' + SWEEP + ' ' + CIRC + '"' +
+        ' transform="rotate(135 26 26)"/>' +
+      '<circle class="fill" cx="26" cy="26" r="' + R + '" fill="none" stroke-width="4"' +
+        ' stroke-linecap="round" stroke-dasharray="0 ' + CIRC + '"' +
+        ' transform="rotate(135 26 26)"/>' +
+      '<circle class="cap" cx="26" cy="26" r="15.5"/>' +
+      '<line class="ptr" x1="26" y1="15" x2="26" y2="20.5" transform="rotate(-135 26 26)"/>';
+    knob.appendChild (svg);
+    return { fill: svg.querySelector (".fill"), ptr: svg.querySelector (".ptr") };
+  }
+
+  const knobs = Array.from (document.querySelectorAll (".knob[data-relay]"));
+  for (const knob of knobs) {
+    const relay = knob.dataset.relay;
+    const out   = knob.parentElement.querySelector (".knob-value");
+    const state = st (relay);
+    const fmt   = FMT[relay] || (v => String (v));
+    const parts = buildKnobSvg (knob);
+
+    const render = () => {
+      const p = Math.min (1, Math.max (0, state.getNormalisedValue()));
+      parts.fill.setAttribute ("stroke-dasharray", (SWEEP * p) + " " + CIRC);
+      parts.ptr.setAttribute ("transform", "rotate(" + (-135 + 270 * p) + " 26 26)");
+      if (out) out.textContent = fmt (state.getScaledValue());
+      if (relay === "attack" || relay === "decay" || relay === "sustain" || relay === "release") drawAdsr();
+      if (relay === "sampleStart" || relay === "sampleEnd") { drawWave(); updateStrip(); }
+      if (relay === "rootKey") paintKeys();
+      if (relay === "vibDepth") updateEnablement();
+      if (relay.startsWith ("vib")) drawVib();
+    };
+    state.valueChangedEvent.addListener (render);
+    state.propertiesChangedEvent.addListener (render);
+    render();
+
+    // ドラッグ中は正規化値をローカルに積算する。
+    // state から読み直すと、整数系パラメータでは値がスナップされて微小移動が失われ、
+    // 「動かない→急に飛ぶ」という不均一な動き（加速したような感触）になるため。
+    let dragging = false, lastY = 0, dragNorm = 0;
+
+    knob.addEventListener ("pointerdown", (e) => {
+      dragging = true; lastY = e.clientY;
+      dragNorm = state.getNormalisedValue();
+      knob.classList.add ("dragging");
+      knob.setPointerCapture (e.pointerId);
+      state.sliderDragStarted();
+    });
+    knob.addEventListener ("pointermove", (e) => {
+      if (! dragging) return;
+      const dy = lastY - e.clientY; lastY = e.clientY;
+      const speed = e.shiftKey ? 0.0006 : 0.005;   // 1px あたりの正規化変化量
+      dragNorm = Math.min (1, Math.max (0, dragNorm + dy * speed));
+      state.setNormalisedValue (dragNorm);
+      render();
+    });
+    const end = () => { if (dragging) { dragging = false; knob.classList.remove ("dragging"); state.sliderDragEnded(); } };
+    knob.addEventListener ("pointerup", end);
+    knob.addEventListener ("pointercancel", end);
+
+    // ダブルクリックで既定値へ（既定値は C++ 側のパラメータが持っている）
+    knob.addEventListener ("dblclick", async () => {
+      await nfResetParam (relay);
+      render();
+    });
+  }
+
+  //================================================================ combo / toggle
+  for (const id of ["algorithm", "durationMode", "syncLength", "portaMode",
+                    "polyMode", "portaShape", "interpQuality"]) {
+    const sel = document.getElementById ("sel-" + id);
+    if (! sel) continue;
+    const state = C[id] = getComboBoxState (id);
+
+    const fill = () => {
+      const items = state.properties.choices || [];
+      sel.innerHTML = "";
+      items.forEach ((label, i) => {
+        const o = document.createElement ("option");
+        o.value = i; o.textContent = label;
+        sel.appendChild (o);
+      });
+      sel.value = String (state.getChoiceIndex());
+      updateEnablement();
+    };
+    state.propertiesChangedEvent.addListener (fill);
+    state.valueChangedEvent.addListener (() => {
+      sel.value = String (state.getChoiceIndex());
+      updateEnablement();
+    });
+    fill();
+    sel.addEventListener ("change", () => {
+      state.setChoiceIndex (parseInt (sel.value, 10));
+      updateEnablement();
+    });
+  }
+
+  for (const id of ["phaseLock", "snapZeroCross"]) {
+    const chk = document.getElementById ("chk-" + id);
+    if (! chk) continue;
+    const state = getToggleState (id);
+    const render = () => { chk.checked = state.getValue(); };
+    state.valueChangedEvent.addListener (render);
+    state.propertiesChangedEvent.addListener (render);
+    render();
+    chk.addEventListener ("change", () => state.setValue (chk.checked));
+  }
+
+  //================================================================ グレーアウト
+  // 規約#12: パラメータは常に存在させ、使えない場面では UI で無効化するだけにする。
+  function dimKnob (relay, on) {
+    const k = document.querySelector ('.knob[data-relay="' + relay + '"]');
+    if (k) k.closest (".knob-cell").classList.toggle ("dim", ! on);
+  }
+  function dimEl (el, on) {
+    if (! el) return;
+    el.disabled = ! on;
+    const wrap = el.closest (".field") || el.closest (".check") || el;
+    wrap.classList.toggle ("dim", ! on);
+  }
+
+  function updateEnablement () {
+    const algo = C.algorithm    ? C.algorithm.getChoiceIndex()    : 0;
+    const dur  = C.durationMode ? C.durationMode.getChoiceIndex() : 0;
+    const por  = C.portaMode    ? C.portaMode.getChoiceIndex()    : 0;
+
+    const isReaper = (algo === 5);
+    const isPV     = (algo === 2);
+
+    dimKnob ("formant",    isReaper);          // フォルマントは REAPER キャッシュのみ焼き込み
+    dimKnob ("stretchAmount", dur === 2);      // Stretch は Manual のみ
+    dimKnob ("portaTime",  por !== 0);         // Glide / Curve / Group は Porta が Off でないとき
+    dimKnob ("portaCurve", por !== 0);
+    dimKnob ("glideGroupMs", por !== 0);
+    dimEl (document.getElementById ("sel-portaShape"), por !== 0);
+
+    // ビブラートは Depth>0 のときだけ Rate/Delay/Fade が意味を持つ
+    const vibOn = st ("vibDepth").getScaledValue() > 0.01;
+    for (const id of ["vibRate", "vibDelay", "vibFade"]) dimKnob (id, vibOn);
+
+    dimEl (document.getElementById ("sel-syncLength"), dur === 1);   // Sync 長は Duration=Sync のみ
+    dimEl (document.getElementById ("chk-phaseLock"),  isPV);        // Phase Lock は Phase Vocoder のみ
+
+    const rc = isReaper && reaperAvailable;
+    dimEl (selRMode, rc); dimEl (selRSub, rc);
+
+    // REAPER Shifter は Sync 非対応 → Duration の "Sync" を選べなくする。選択中なら Natural へ。
+    const selDur = document.getElementById ("sel-durationMode");
+    if (selDur && selDur.options.length > 1) selDur.options[1].disabled = isReaper;
+    if (isReaper && dur === 1 && C.durationMode) C.durationMode.setChoiceIndex (0);
+  }
+
+  //---------------------------------------------------------------- waveform
+  window.drawWave = drawWave;
+
+  // トリムは波形上で操作する（sampleEnd にはノブが無い）ので、ここで再描画を購読する
+  for (const id of ["sampleStart", "sampleEnd"]) {
+    st (id).valueChangedEvent.addListener (() => { drawWave(); updateStrip(); });
+    st (id).propertiesChangedEvent.addListener (() => { drawWave(); updateStrip(); });
+  }
+
+  function updateStrip () {
+    const s = st ("sampleStart").getScaledValue(), e = st ("sampleEnd").getScaledValue();
+    document.getElementById ("lbl-start").textContent = s.toFixed (3);
+    document.getElementById ("lbl-end").textContent   = e.toFixed (3);
+    const len = Math.max (0, e - s) * sampleSeconds;
+    document.getElementById ("lbl-len").textContent = sampleSeconds > 0 ? len.toFixed (2) + " s" : "—";
+  }
+  function drawWave () {
+    if (! waveCanvas) return;
+    const c = waveCanvas, ctx = c.getContext ("2d");
+    const w = c.width, h = c.height;
+    const mid = h / 2, half = h * .44;
+    ctx.clearRect (0, 0, w, h);
+
+    // グリッド + センターライン（サンプルが無くても描いて“計器”らしくする）
+    ctx.strokeStyle = "rgba(255,255,255,.045)"; ctx.lineWidth = 1;
+    for (let i = 1; i < 8; ++i) {
+      const x = Math.round (w * i / 8) + .5;
+      ctx.beginPath(); ctx.moveTo (x, 0); ctx.lineTo (x, h); ctx.stroke();
+    }
+    for (const fy of [.25, .75]) {
+      const y = Math.round (h * fy) + .5;
+      ctx.beginPath(); ctx.moveTo (0, y); ctx.lineTo (w, y); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,.10)";
+    ctx.beginPath(); ctx.moveTo (0, Math.round (mid) + .5); ctx.lineTo (w, Math.round (mid) + .5); ctx.stroke();
+
+    if (! peaks || ! peaks.length) return;
+
+    const s01 = st ("sampleStart").getScaledValue();
+    const e01 = st ("sampleEnd").getScaledValue();
+    const toX = (p) => (p - view.start) / (view.end - view.start) * w;
+    const sx = toX (s01), ex = toX (e01);
+
+    // トリム外を暗く落とす（範囲が一目で分かる）
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    if (sx > 0) ctx.fillRect (0, 0, Math.min (sx, w), h);
+    if (ex < w) ctx.fillRect (Math.max (0, ex), 0, w - Math.max (0, ex), h);
+
+    // 波形（内側を明るく、外周をやや暗く）
+    const n = peaks.length / 2;
+    const grad = ctx.createLinearGradient (0, 0, 0, h);
+    grad.addColorStop (0,  ACCENT_LO);
+    grad.addColorStop (.5, ACCENT_HI);
+    grad.addColorStop (1,  ACCENT_LO);
+    ctx.strokeStyle = grad; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x < w; ++x) {
+      const pos = view.start + (x / w) * (view.end - view.start);
+      const i = Math.min (n - 1, Math.max (0, Math.floor (pos * n)));
+      const lo = Math.max (-1, Math.min (1, peaks[i * 2]     * normGain));
+      const hi = Math.max (-1, Math.min (1, peaks[i * 2 + 1] * normGain));
+      ctx.moveTo (x + .5, mid - hi * half);
+      ctx.lineTo (x + .5, mid - lo * half + .5);
+    }
+    ctx.stroke();
+
+    // トリムのハンドル（縦線＋上下のつまみ）
+    ctx.strokeStyle = "#ff9f4a"; ctx.fillStyle = "#ff9f4a"; ctx.lineWidth = 1;
+    for (const p of [s01, e01]) {
+      const x = toX (p);
+      if (x < -6 || x > w + 6) continue;
+      const xr = Math.round (x) + .5;
+      ctx.beginPath(); ctx.moveTo (xr, 0); ctx.lineTo (xr, h); ctx.stroke();
+      ctx.fillRect (xr - 3, 0, 6, 6);
+      ctx.fillRect (xr - 3, h - 6, 6, 6);
+    }
+  }
+
+  // 読み込み済みサンプルの一覧（切り替えて聴き比べる）
+  const selSample = document.getElementById ("sel-sample");
+  async function refreshSampleList () {
+    const r = await nfGetSamples();
+    const names = (r && r.names) || [];
+    selSample.innerHTML = "";
+    names.forEach ((nm, i) => {
+      const o = document.createElement ("option");
+      o.value = i; o.textContent = (i + 1) + ". " + (nm || "sample");
+      selSample.appendChild (o);
+    });
+    selSample.value = String (r ? r.active : -1);
+    // 1つ以下なら切り替える意味がないので隠す
+    selSample.hidden = names.length < 2;
+    document.getElementById ("btn-remove").hidden = names.length < 1;
+  }
+  selSample.addEventListener ("change", async () => {
+    await nfSelectSample (parseInt (selSample.value, 10));
+    // パラメータが丸ごと切り替わるので、グラフ類も描き直す（ノブ値はリレー経由で自動更新）
+    refreshWave(); refreshSampleList(); refreshReaper();
+    drawAdsr(); drawVib(); updateStrip(); paintKeys(); updateEnablement();
+  });
+  document.getElementById ("btn-remove").addEventListener ("click", async () => {
+    await nfRemoveSample (parseInt (selSample.value, 10));
+    refreshWave(); refreshSampleList();
+  });
+
+  let lastWaveKey = null;
+  async function refreshWave () {
+    const r = await nfGetWaveform();
+    peaks    = r && r.peaks ? r.peaks : null;
+    normGain = r && r.normGain ? r.normGain : 1;
+    sampleSeconds = r && r.seconds ? r.seconds : 0;
+
+    // 素材が変わったときだけズームを全体に戻す。
+    // NORMALIZE でも version は進むので、毎回リセットすると表示位置を失う。
+    const key = (r && r.name ? r.name : "") + "|" + sampleSeconds.toFixed (6);
+    if (key !== lastWaveKey) { view = { start: 0, end: 1 }; lastWaveKey = key; }
+
+    if (nameEl) nameEl.textContent = (r && r.name) ? r.name : "— no sample —";
+    if (dropHint) dropHint.hidden = !! (peaks && peaks.length);
+    drawWave(); updateStrip();
+  }
+
+  // 波形の操作: ホイールでズーム / 右ドラッグでスクロール / 左クリックで Start・End
+  waveCanvas.addEventListener ("wheel", (e) => {
+    e.preventDefault();
+    if (! peaks) return;
+    const fx = e.offsetX / waveCanvas.clientWidth;
+    const anchor = view.start + fx * (view.end - view.start);
+    const factor = e.deltaY < 0 ? 1 / 1.2 : 1.2;
+    const span = Math.min (1, Math.max (0.0005, (view.end - view.start) * factor));
+    // 変数名を st にしない: 外側の st(id) ヘルパを隠してしまい、
+    // このブロックで st(...) を呼んだ瞬間に TDZ 例外になる（過去に何度も踏んだ罠）
+    const viewStart = Math.min (Math.max (anchor - fx * span, 0), 1 - span);
+    view = { start: viewStart, end: viewStart + span };
+    drawWave();
+  }, { passive: false });
+
+  waveCanvas.addEventListener ("contextmenu", (e) => e.preventDefault());
+
+  let panning = false, panX = 0, trimming = null;   // trimming は "sampleStart" | "sampleEnd"
+
+  // トリム値を設定。Start と End が交差しないよう相手側でクランプする。
+  function setTrim (which, pos) {
+    const s = st ("sampleStart").getScaledValue();
+    const e = st ("sampleEnd").getScaledValue();
+    let v = Math.min (1, Math.max (0, pos));
+    if (which === "sampleStart") v = Math.min (v, e - 0.001);
+    else                         v = Math.max (v, s + 0.001);
+    st (which).setNormalisedValue (Math.min (1, Math.max (0, v)));   // レンジ 0..1 なので値=正規化値
+    drawWave();
+  }
+  waveCanvas.addEventListener ("pointerdown", (e) => {
+    if (! peaks) { fileInput.click(); return; }   // 未読み込みならファイル選択を開く
+    waveCanvas.setPointerCapture (e.pointerId);
+    if (e.button !== 0) { panning = true; panX = e.clientX; return; }
+
+    const fx = e.offsetX / waveCanvas.clientWidth;
+    const pos = view.start + fx * (view.end - view.start);
+    // 近い方のハンドルを掴む
+    trimming = Math.abs (pos - st ("sampleStart").getScaledValue())
+             <= Math.abs (pos - st ("sampleEnd").getScaledValue()) ? "sampleStart" : "sampleEnd";
+    st (trimming).sliderDragStarted();
+    setTrim (trimming, pos);
+  });
+  waveCanvas.addEventListener ("pointermove", (e) => {
+    if (panning) {
+      const dx = (e.clientX - panX) / waveCanvas.clientWidth; panX = e.clientX;
+      const span = view.end - view.start;
+      const viewStart = Math.min (Math.max (view.start - dx * span, 0), 1 - span);   // st は外側ヘルパ名
+      view = { start: viewStart, end: viewStart + span };
+      drawWave();
+    } else if (trimming) {
+      const fx = e.offsetX / waveCanvas.clientWidth;
+      setTrim (trimming, view.start + fx * (view.end - view.start));
+    }
+  });
+  const waveUp = () => {
+    panning = false;
+    if (trimming) { st (trimming).sliderDragEnded(); trimming = null; }
+  };
+  waveCanvas.addEventListener ("pointerup", waveUp);
+  waveCanvas.addEventListener ("pointercancel", waveUp);
+
+  //---------------------------------------------------------------- D&D / file
+  // WebView2 では dataTransfer から実パスが取れないため、バイト列を読んで backend へ渡す。
+  // base64 で渡す都合上、転送中はファイルサイズの 5〜6 倍のメモリを使い、
+  // エンコードもメッセージスレッドを塞ぐ。大きすぎるファイルは明示的に断る。
+  const MAX_TRANSFER_MB = 64;
+
+  async function sendFile (file) {
+    try {
+      if (! file) { note ("drop: file オブジェクトが取得できません"); return; }
+      if (file.size > MAX_TRANSFER_MB * 1024 * 1024) {
+        note ("ファイルが大きすぎます（上限 " + MAX_TRANSFER_MB + " MB）: "
+              + file.name + " / " + (file.size / 1048576).toFixed (1) + " MB");
+        return;
+      }
+      note ("読み込み中: " + file.name + " (" + Math.round (file.size / 1024) + " KB)");
+
+      const buf = new Uint8Array (await file.arrayBuffer());
+      let bin = "";
+      const CH = 0x8000;
+      for (let i = 0; i < buf.length; i += CH)
+        bin += String.fromCharCode.apply (null, buf.subarray (i, i + CH));
+
+      const ok = await nfLoadSample (btoa (bin), file.name);
+      if (! ok) { note ("転送失敗: " + file.name); return; }
+
+      // デコードは背景スレッドで進む。一定時間 sampleChanged が来なければ失敗とみなす。
+      pendingLoadName = file.name;
+      clearTimeout (pendingLoadTimer);
+      pendingLoadTimer = setTimeout (() => {
+        if (pendingLoadName) note ("デコードできませんでした（対応形式か確認してください）: " + pendingLoadName);
+      }, 5000);
+    }
+    catch (e) { note ("読み込みエラー: " + (e && e.message ? e.message : e)); }
+  }
+
+  // 画像ファイルを背景として設定する（D&D / 設定画面の両方から使う）
+  async function sendBgFile (file) {
+    try {
+      note ("背景を設定中: " + file.name);
+      const buf = new Uint8Array (await file.arrayBuffer());
+      let bin = ""; const CH = 0x8000;
+      for (let i = 0; i < buf.length; i += CH) bin += String.fromCharCode.apply (null, buf.subarray (i, i + CH));
+      const ok = await nfSetBgImage (btoa (bin));
+      note (ok ? "" : "背景画像を読み込めませんでした: " + file.name);
+      refreshAppearance();
+    }
+    catch (e) { note ("背景エラー: " + (e && e.message ? e.message : e)); }
+  }
+
+  // dataTransfer から File を取り出す（WebView2 では files が空で items 側にあることがある）
+  function fileFromDataTransfer (dt) {
+    if (! dt) return null;
+    if (dt.files && dt.files.length) return dt.files[0];
+    if (dt.items) {
+      for (const it of dt.items)
+        if (it.kind === "file") { const f = it.getAsFile(); if (f) return f; }
+    }
+    return null;
+  }
+
+  for (const ev of ["dragenter", "dragover"])
+    waveWrap.addEventListener (ev, (e) => { e.preventDefault(); waveWrap.classList.add ("drag"); });
+  waveWrap.addEventListener ("dragleave", () => waveWrap.classList.remove ("drag"));
+  // ドロップは領域外に落とされることもあるので document 側でも受ける
+  function handleDrop (e) {
+    e.preventDefault();
+    waveWrap.classList.remove ("drag");
+    const dt = e.dataTransfer;
+    const f = fileFromDataTransfer (dt);
+    if (f) {
+      // 画像は背景画像として扱う（音声として読もうとして失敗するのを防ぐ）
+      if (/^image\//.test (f.type) || /\.(png|jpe?g|gif|bmp|webp)$/i.test (f.name)) sendBgFile (f);
+      else                                                                          sendFile (f);
+      return;
+    }
+    // 取れなかった場合は原因を表示（WebView2 が実ファイルを渡さないケースの切り分け用）
+    const nf = dt && dt.files ? dt.files.length : -1;
+    const ni = dt && dt.items ? dt.items.length : -1;
+    const types = dt && dt.types ? Array.from (dt.types).join (",") : "?";
+    note ("drop: ファイルを取得できません (files=" + nf + " items=" + ni + " types=" + types + ")");
+  }
+  // drop は document 側だけで受ける。waveWrap にも付けるとバブリングで二重に処理され、
+  // 同じファイルが 2 つ読み込まれてしまう。
+  document.addEventListener ("dragover", (e) => e.preventDefault());
+  document.addEventListener ("drop", handleDrop);
+
+  fileInput.addEventListener ("change", () => { if (fileInput.files[0]) sendFile (fileInput.files[0]); fileInput.value = ""; });
+
+  document.getElementById ("btn-load").addEventListener ("click", () => fileInput.click());
+  document.getElementById ("btn-normalize").addEventListener ("click", () => nfNormalize().then (refreshWave));
+  document.getElementById ("btn-detect").addEventListener ("click", async () => {
+    const btn = document.getElementById ("btn-detect");
+    const ok = await nfDetectRoot();
+    btn.textContent = ok ? "DETECT ✓" : "?";
+    setTimeout (() => { btn.textContent = "DETECT"; }, 900);
+  });
+
+  //---------------------------------------------------------------- ADSR
+  window.drawAdsr = drawAdsr;
+  function adsrGeom () {
+    const w = adsrCanvas.width, h = adsrCanvas.height;
+    const g = (id) => S[id] ? S[id].getScaledValue() : 0;
+    const sc = (ms) => Math.sqrt (Math.max (0, ms));
+    const wa = sc (g ("attack")), wd = sc (g ("decay")), wr = sc (g ("release"));
+    const sum = Math.max (0.001, wa + wd + wr), sFrac = .22;
+    const avail = w * (1 - sFrac);
+    const xa = avail * wa / sum, xd = avail * wd / sum, xr = avail * wr / sum, xs = w * sFrac;
+    const yTop = 4, yBot = h - 4;
+    const sy = yBot - (yBot - yTop) * Math.min (1, Math.max (0, g ("sustain")));
+    return { w, h, xa, xd, xs, xr, yTop, yBot, sy };
+  }
+  function drawAdsr () {
+    if (! adsrCanvas || ! S.attack) return;
+    const ctx = adsrCanvas.getContext ("2d");
+    const G = adsrGeom();
+    ctx.clearRect (0, 0, G.w, G.h);
+    const ax = G.xa, dx = ax + G.xd, sx = dx + G.xs, rx = sx + G.xr;
+
+    // 背景グリッド
+    ctx.strokeStyle = "rgba(255,255,255,.045)"; ctx.lineWidth = 1;
+    for (let i = 1; i < 4; ++i) {
+      const y = Math.round (G.h * i / 4) + .5;
+      ctx.beginPath(); ctx.moveTo (0, y); ctx.lineTo (G.w, y); ctx.stroke();
+    }
+    // 区間の区切り
+    ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.setLineDash ([2, 3]);
+    for (const x of [ax, dx, sx]) { ctx.beginPath(); ctx.moveTo (x + .5, 0); ctx.lineTo (x + .5, G.h); ctx.stroke(); }
+    ctx.setLineDash ([]);
+
+    // 塗り
+    const grad = ctx.createLinearGradient (0, G.yTop, 0, G.yBot);
+    grad.addColorStop (0, rgba (ACCENT, .35));
+    grad.addColorStop (1, rgba (ACCENT, .04));
+    ctx.beginPath();
+    ctx.moveTo (0, G.yBot); ctx.lineTo (ax, G.yTop); ctx.lineTo (dx, G.sy);
+    ctx.lineTo (sx, G.sy);  ctx.lineTo (rx, G.yBot); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+
+    // 線
+    ctx.beginPath();
+    ctx.moveTo (0, G.yBot); ctx.lineTo (ax, G.yTop); ctx.lineTo (dx, G.sy);
+    ctx.lineTo (sx, G.sy);  ctx.lineTo (rx, G.yBot);
+    ctx.strokeStyle = ACCENT_HI; ctx.lineWidth = 2;
+    ctx.lineJoin = "round"; ctx.stroke();
+
+    // ハンドル
+    for (const p of [[ax, G.yTop], [dx, G.sy], [rx, G.yBot]]) {
+      ctx.beginPath(); ctx.arc (p[0], p[1], 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#0e1114"; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = ACCENT_HI; ctx.stroke();
+    }
+  }
+
+  let grab = -1, lastPos = null;
+  adsrCanvas.addEventListener ("pointerdown", (e) => {
+    const G = adsrGeom();
+    const ax = G.xa, dx = ax + G.xd, rx = dx + G.xs + G.xr;
+    const sx = e.offsetX * (adsrCanvas.width / adsrCanvas.clientWidth);
+    const sy = e.offsetY * (adsrCanvas.height / adsrCanvas.clientHeight);
+    const d = (px, py) => Math.hypot (px - sx, py - sy);
+    const dA = d (ax, G.yTop), dD = d (dx, G.sy), dR = d (rx, G.yBot);
+    grab = (dA <= dD && dA <= dR) ? 0 : (dD <= dR ? 1 : 2);
+    lastPos = { x: sx, y: sy };
+    adsrCanvas.setPointerCapture (e.pointerId);
+    for (const id of ["attack","decay","sustain","release"]) S[id].sliderDragStarted();
+  });
+  adsrCanvas.addEventListener ("pointermove", (e) => {
+    if (grab < 0) return;
+    const sx = e.offsetX * (adsrCanvas.width / adsrCanvas.clientWidth);
+    const sy = e.offsetY * (adsrCanvas.height / adsrCanvas.clientHeight);
+    const dx = sx - lastPos.x, dy = sy - lastPos.y;
+    lastPos = { x: sx, y: sy };
+    // スケール値(ms) → 正規化値。JS 側に公開された変換が無いので properties から自前で計算する。
+    // 引数名を st にしない（外側の st(id) ヘルパを隠さないため）
+    const toNorm = (state, scaled) => {
+      const p = state.properties;
+      const t = (scaled - p.start) / (p.end - p.start);
+      return Math.min (1, Math.max (0, Math.pow (Math.min (1, Math.max (0, t)), p.skew)));
+    };
+    const adjMs = (id, dpx) => {
+      const state = st (id);
+      const k  = Math.sqrt (Math.max (1, state.properties.end)) / Math.max (1, adsrCanvas.width);
+      const sq = Math.sqrt (Math.max (0, state.getScaledValue())) + dpx * k;
+      state.setNormalisedValue (toNorm (state, sq * sq));
+    };
+    if (grab === 0) adjMs ("attack", dx);
+    else if (grab === 1) {
+      adjMs ("decay", dx);
+      const s = S.sustain;
+      s.setNormalisedValue (Math.min (1, Math.max (0, s.getNormalisedValue() - dy / adsrCanvas.height)));
+    } else adjMs ("release", dx);
+    drawAdsr();
+  });
+  const adsrUp = () => {
+    if (grab < 0) return;
+    grab = -1;
+    for (const id of ["attack","decay","sustain","release"]) S[id].sliderDragEnded();
+  };
+  adsrCanvas.addEventListener ("pointerup", adsrUp);
+  adsrCanvas.addEventListener ("pointercancel", adsrUp);
+
+  //---------------------------------------------------------------- ビブラート表示
+  // 発音からの時間に対する変調量（DELAY 待機 → FADE で立ち上げ → DEPTH）を描く。
+  window.drawVib = drawVib;
+  function drawVib () {
+    if (! vibCanvas || ! S.vibDepth) return;
+    const ctx = vibCanvas.getContext ("2d");
+    const w = vibCanvas.width, h = vibCanvas.height, mid = h / 2;
+    ctx.clearRect (0, 0, w, h);
+
+    const depth = st ("vibDepth").getScaledValue();
+    const rate  = st ("vibRate").getScaledValue();
+    const delay = st ("vibDelay").getScaledValue() / 1000;
+    const fade  = st ("vibFade").getScaledValue()  / 1000;
+    const span  = Math.max (1.0, delay + fade + 3 / Math.max (0.1, rate));   // 表示する秒数
+
+    // グリッド（0.5秒ごと）＋センターライン
+    ctx.strokeStyle = "rgba(255,255,255,.05)"; ctx.lineWidth = 1;
+    for (let t = 0.5; t < span; t += 0.5) {
+      const x = Math.round (t / span * w) + .5;
+      ctx.beginPath(); ctx.moveTo (x, 0); ctx.lineTo (x, h); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(255,255,255,.14)";
+    ctx.beginPath(); ctx.moveTo (0, Math.round (mid) + .5); ctx.lineTo (w, Math.round (mid) + .5); ctx.stroke();
+
+    if (depth <= 0.01) {
+      ctx.fillStyle = "#6b7681"; ctx.font = "10px 'Segoe UI', sans-serif"; ctx.textAlign = "center";
+      ctx.fillText ("DEPTH を上げるとビブラートが有効になります", w / 2, mid - 8);
+      return;
+    }
+
+    const amp = h * .40;                       // 200ct を画面いっぱいとして正規化
+    const scale = Math.min (1, depth / 200);
+    const envAt = (t) => {
+      const u = t - delay;
+      if (u <= 0) return 0;
+      return fade > 0 ? Math.min (1, u / fade) : 1;
+    };
+
+    // 包絡線（上下）
+    ctx.strokeStyle = rgba (ACCENT, .45); ctx.setLineDash ([3, 3]); ctx.lineWidth = 1;
+    for (const sign of [-1, 1]) {
+      ctx.beginPath();
+      for (let x = 0; x <= w; ++x) {
+        const y = mid + sign * envAt (x / w * span) * amp * scale;
+        x === 0 ? ctx.moveTo (x, y) : ctx.lineTo (x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash ([]);
+
+    // 実際の揺れ
+    ctx.strokeStyle = ACCENT_HI; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let x = 0; x <= w; ++x) {
+      const t = x / w * span;
+      const y = mid + envAt (t) * amp * scale * Math.sin (2 * Math.PI * rate * t);
+      x === 0 ? ctx.moveTo (x, y) : ctx.lineTo (x, y);
+    }
+    ctx.stroke();
+
+    // DELAY / FADE の境界
+    ctx.strokeStyle = "#ff9f4a"; ctx.setLineDash ([2, 3]);
+    for (const t of [delay, delay + fade]) {
+      if (t <= 0 || t >= span) continue;
+      const x = Math.round (t / span * w) + .5;
+      ctx.beginPath(); ctx.moveTo (x, 0); ctx.lineTo (x, h); ctx.stroke();
+    }
+    ctx.setLineDash ([]);
+
+    ctx.fillStyle = "#6b7681"; ctx.font = "9px 'Segoe UI', sans-serif"; ctx.textAlign = "left";
+    ctx.fillText (span.toFixed (2) + " s", 4, h - 4);
+  }
+
+  //---------------------------------------------------------------- keyboard
+  const LOW = 36, HIGH = 96;   // C2..C7
+  const isBlack = (n) => [1,3,6,8,10].includes (((n % 12) + 12) % 12);
+
+  function buildKeys () {
+    keysEl.innerHTML = ""; keyEls.clear();
+    const whites = [];
+    for (let n = LOW; n <= HIGH; ++n) if (! isBlack (n)) whites.push (n);
+    const wpc = 100 / whites.length;
+
+    whites.forEach ((n, i) => {
+      const d = document.createElement ("div");
+      d.className = "key white"; d.style.left = (i * wpc) + "%"; d.style.width = wpc + "%";
+      d.dataset.note = n; keysEl.appendChild (d); keyEls.set (n, d);
+    });
+    for (let n = LOW; n <= HIGH; ++n) {
+      if (! isBlack (n)) continue;
+      const below = whites.filter (w => w < n).length;   // 直前の白鍵数
+      const d = document.createElement ("div");
+      d.className = "key black";
+      d.style.left = (below * wpc - wpc * .3) + "%"; d.style.width = (wpc * .6) + "%";
+      d.dataset.note = n; keysEl.appendChild (d); keyEls.set (n, d);
+    }
+    paintKeys();
+  }
+
+  window.paintKeys = paintKeys;
+  function paintKeys () {
+    if (! keyEls || keyEls.size === 0) return;
+    const root = S.rootKey ? Math.round (S.rootKey.getScaledValue()) : -1;
+    for (const [n, el] of keyEls) el.classList.toggle ("root", n === root);
+  }
+
+  let heldNote = -1;
+  const noteOn  = (n) => { if (heldNote === n) return; noteOff(); heldNote = n; nfNote (n, true);
+                           const el = keyEls.get (n); if (el) el.classList.add ("down"); };
+  const noteOff = () => { if (heldNote < 0) return; nfNote (heldNote, false);
+                          const el = keyEls.get (heldNote); if (el) el.classList.remove ("down"); heldNote = -1; };
+
+  keysEl.addEventListener ("contextmenu", (e) => e.preventDefault());
+  keysEl.addEventListener ("pointerdown", (e) => {
+    const t = e.target.closest (".key"); if (! t) return;
+    const n = parseInt (t.dataset.note, 10);
+    if (e.button !== 0) {   // 右クリックで Root 指定（音は出さない）
+      S.rootKey.sliderDragStarted();
+      S.rootKey.setNormalisedValue (n / 127);
+      S.rootKey.sliderDragEnded();
+      paintKeys();
+      return;
+    }
+    keysEl.setPointerCapture (e.pointerId);
+    noteOn (n);
+  });
+  keysEl.addEventListener ("pointermove", (e) => {
+    if (heldNote < 0) return;
+    const t = document.elementFromPoint (e.clientX, e.clientY);
+    const k = t && t.closest ? t.closest (".key") : null;
+    if (k) noteOn (parseInt (k.dataset.note, 10));
+  });
+  keysEl.addEventListener ("pointerup", noteOff);
+  keysEl.addEventListener ("pointercancel", noteOff);
+  buildKeys();
+
+  //---------------------------------------------------------------- REAPER modes
+  async function refreshReaper () {
+    const r = await nfReaperModes();
+    if (! r) return;
+    const fill = (sel, arr, cur) => {
+      sel.innerHTML = "";
+      (arr || []).forEach ((label, i) => {
+        const o = document.createElement ("option"); o.value = i; o.textContent = label || ("#" + i);
+        sel.appendChild (o);
+      });
+      sel.value = String (cur);
+      sel.disabled = ! r.available || ! (arr && arr.length);
+    };
+    fill (selRMode, r.modes, r.mode);
+    fill (selRSub,  r.subs,  r.sub);
+    reaperAvailable = !! r.available;
+    updateEnablement();
+  }
+  selRMode.addEventListener ("change", async () => {
+    await nfSetReaperMode (parseInt (selRMode.value, 10), 0);
+    refreshReaper();
+  });
+  selRSub.addEventListener ("change", () => nfSetReaperMode (parseInt (selRMode.value, 10), parseInt (selRSub.value, 10)));
+  refreshReaper();
+
+  //---------------------------------------------------------------- backend events
+  window.__JUCE__.backend.addEventListener ("sampleChanged", () => {
+    pendingLoadName = null; clearTimeout (pendingLoadTimer);
+    note ("");
+    refreshWave(); refreshReaper(); refreshSampleList();
+  });
+  window.__JUCE__.backend.addEventListener ("status", (s) => {
+    const bar = document.getElementById ("cache-bar");
+    const fill = document.getElementById ("cache-fill");
+    const text = document.getElementById ("cache-text");
+    bar.hidden = ! s.cacheBusy;
+    if (s.cacheBusy) {
+      fill.style.width = Math.round (s.cacheProgress * 100) + "%";
+      text.textContent = "キャッシュ生成中 " + Math.round (s.cacheProgress * 100) + "%";
+    }
+    document.getElementById ("reaper-info").textContent = s.reaper || "REAPER 非対応ホスト";
+    const up = document.getElementById ("update-btn");
+    up.hidden = ! s.updateAvail;
+    if (s.updateAvail) up.textContent = "⬆ v" + s.latest;
+    statusEl.textContent = (s.fallback ? "⚠ 代替エンジンで再生中 · " : "") + "v" + s.version;
+  });
+  document.getElementById ("update-btn").addEventListener ("click", () => nfOpenReleases());
+
+  //---------------------------------------------------------------- 外観設定
+  const dlg     = document.getElementById ("settings");
+  const inColour= document.getElementById ("set-colour");
+  const inOpac  = document.getElementById ("set-opacity");
+  const opLbl   = document.getElementById ("set-oplbl");
+  const inPanel = document.getElementById ("set-panel");
+  const paLbl   = document.getElementById ("set-palbl");
+  const bgInput = document.getElementById ("bg-input");
+  const bgLayer = document.getElementById ("bg-layer");
+
+  // プリセット色
+  const SWATCHES = ["#4bb4f5","#7ee0c0","#a678f0","#ff7b9c","#ffb04a","#8cd94a","#ff5e5e","#c8d0d8"];
+  const swWrap = document.getElementById ("set-swatches");
+  for (const c of SWATCHES) {
+    const d = document.createElement ("div");
+    d.className = "swatch"; d.style.background = c;
+    d.addEventListener ("click", () => { inColour.value = c; pushAppearance(); });
+    swWrap.appendChild (d);
+  }
+
+  function applyBg (dataUrl, opacity) {
+    bgLayer.style.setProperty ("--bg-img", dataUrl ? "url('" + dataUrl + "')" : "none");
+    bgLayer.style.setProperty ("--bg-op", dataUrl ? opacity : 0);
+  }
+
+  // パネルを半透明にして背景画像を透かす。窪み（波形など）は読みやすさのため少し濃いめに。
+  function applyPanelAlpha (a) {
+    const root = document.documentElement.style;
+    root.setProperty ("--panel-a", a);
+    root.setProperty ("--inset-a", Math.min (1, a + 0.15));
+  }
+
+  let bgDataUrl = null;
+  async function refreshAppearance () {
+    const a = await nfGetAppearance();
+    if (! a) return;
+    inColour.value = a.colour || "#4bb4f5";
+    inOpac.value   = a.opacity != null ? a.opacity : .25;
+    inPanel.value  = a.panel   != null ? a.panel   : 1;
+    opLbl.textContent = Number (inOpac.value).toFixed (2);
+    paLbl.textContent = Number (inPanel.value).toFixed (2);
+    bgDataUrl = a.bg || null;
+    applyAccent (inColour.value);
+    applyBg (bgDataUrl, Number (inOpac.value));
+    applyPanelAlpha (Number (inPanel.value));
+  }
+
+  function pushAppearance () {
+    opLbl.textContent = Number (inOpac.value).toFixed (2);
+    paLbl.textContent = Number (inPanel.value).toFixed (2);
+    applyAccent (inColour.value);
+    applyBg (bgDataUrl, Number (inOpac.value));
+    applyPanelAlpha (Number (inPanel.value));
+    nfSetAppearance (inColour.value, Number (inOpac.value), Number (inPanel.value));
+  }
+  inColour.addEventListener ("input", pushAppearance);
+  inOpac.addEventListener ("input", pushAppearance);
+  inPanel.addEventListener ("input", pushAppearance);
+
+  document.getElementById ("btn-settings").addEventListener ("click", () => { dlg.hidden = false; });
+  document.getElementById ("set-close").addEventListener ("click", () => { dlg.hidden = true; });
+  dlg.addEventListener ("pointerdown", (e) => { if (e.target === dlg) dlg.hidden = true; });
+
+  document.getElementById ("set-pick").addEventListener ("click", () => bgInput.click());
+  bgInput.addEventListener ("change", () => {
+    const f = bgInput.files[0]; bgInput.value = "";
+    if (f) sendBgFile (f);
+  });
+  document.getElementById ("set-clear").addEventListener ("click", async () => {
+    await nfSetBgImage ("");
+    refreshAppearance();
+  });
+  document.getElementById ("set-default").addEventListener ("click", async () => {
+    const b = document.getElementById ("set-default");
+    await nfSaveAppearanceDefault();
+    b.textContent = "保存しました ✓";
+    setTimeout (() => { b.textContent = "全インスタンスの既定にする"; }, 1200);
+  });
+
+  // 他インスタンスからのブロードキャストや state 復元にも追従
+  window.__JUCE__.backend.addEventListener ("appearanceChanged", refreshAppearance);
+  refreshAppearance();
+
+  // ---- タブ ----
+  const tabs  = Array.from (document.querySelectorAll (".tab"));
+  const pages = Array.from (document.querySelectorAll ("[data-page]"));
+  function showTab (name) {
+    for (const t of tabs)  t.classList.toggle ("active", t.dataset.tab === name);
+    for (const p of pages) p.hidden = (p.dataset.page !== name);
+    layoutCanvases();   // 非表示中は幅0なので、表示後にキャンバスを測り直す
+  }
+  for (const t of tabs) t.addEventListener ("click", () => showTab (t.dataset.tab));
+  showTab ("main");
+
+  refreshWave();
+  refreshSampleList();
+  layoutCanvases();
+  statusEl.textContent = "ready";
+}).catch (e => showError (String (e && e.message ? e.message : e)));
+
+//================================================================ canvas sizing
+function layoutCanvases () {
+  for (const c of document.querySelectorAll ("canvas")) {
+    const r = c.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) { c.width = Math.round (r.width); c.height = Math.round (r.height); }
+  }
+  if (window.drawWave) window.drawWave();
+  if (window.drawAdsr) window.drawAdsr();
+  if (window.drawVib)  window.drawVib();
+}
+window.addEventListener ("resize", layoutCanvases);
+layoutCanvases();

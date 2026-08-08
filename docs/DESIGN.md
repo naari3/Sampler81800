@@ -537,6 +537,11 @@ bool Voice::isFinished() const noexcept
 | `gain` `pan` | float | | 0dB / center | |
 | `velSens` | float | 0..1 | 0.5 | |
 | `bendRange` | int | 0..48 | 2 | |
+| `octave` | int | -4..4 | 0 | ピッチに 12×n 半音を加算 |
+| `vibDepth` | float | 0..200 cent | 0 | 0 で無効 |
+| `vibRate` | float | 0.1..20 Hz | 5 | |
+| `vibDelay` | float | 0..2000 ms | 0 | 発音から効き始めるまで |
+| `vibFade` | float | 0..2000 ms | 200 | 最大振幅に達するまで（ADSR の A 相当） |
 
 `algorithm` の選択肢（**この6個から増減させない**）:
 
@@ -562,20 +567,58 @@ bool Voice::isFinished() const noexcept
 | `sampleStart` / `sampleEnd` | **ノートオン時に確定**。発音中は変えない | 発音中に動かすと再生位置が飛ぶ |
 | `algorithm` / `durationMode` / `loopMode` / `interpQuality` | 離散。スムージングしない | 切替はエンジン差し替えと固定レイテンシで吸収 |
 | ADSR 時定数 | 次回発音から反映 | 発音中に変えると包絡が破綻する |
+| `vibDepth` | 20ms | 自動化で段差が出るとピッチのジッパーノイズになる |
+| `vibRate` | スムージングしない | 位相の増分にしか効かず、段差が可聴でない |
+| `vibDelay` / `vibFade` | **ノートオン時に確定** | 発音からの経過時間が基準なので、発音中に変えても意味を持たない |
 
 離散パラメータを発音中に変えてもクリックが出ないことは Phase 3 の受け入れ条件で検証する。
+
+#### ビブラート
+
+`VibratoLfo`（`src/core/VibratoLfo.h`, JUCE非依存）が担当する。
+発音から `vibDelay` 経過後、`vibFade` をかけて `vibDepth` へ線形に立ち上げ、正弦波でピッチを揺らす。
+
+- 変調量は**半音**で返し、ピッチの半音値に加算してから比へ変換する（規約4）。
+- 位相と経過サンプルは**ボイス固有**（規約9）。発音ごとに `reset()` する。
+- `reset()` にはエンジンの固定レイテンシを**負値**で渡す。こうすると Delay/Fade の起点が
+  ADSR と揃い、高レイテンシのエンジンで「音より先に揺れ始める」現象を防げる。
+- フレーム系エンジン（WSOLA / PV / REAPER Shifter）は規約10によりフレーム先頭で
+  pitchRatio を固定するため、揺れの解像度はフレームレートに丸められる。滑らかにしたい場合は
+  Varispeed か REAPER Shifter の Natural/Manual（キャッシュ再生＝内部Varispeed）を使う。
 
 ### 3.9 ステート保存
 
 ```xml
-<state>
-  <APVTS .../>
-  <sample name="voice.wav" path="C:/..." embedded="1"
-          format="flac" srcSampleRate="44100" normScale="1.0">
-     BASE64...
-  </sample>
-</state>
+<OtoMadState stateVersion="2" uiScalePct="100" editorW="890" editorH="755">
+  <APVTS .../>                        <!-- 選択中スロットの設定 -->
+
+  <samples active="0">                <!-- stateVersion 2 以降。複数サンプルの切り替え用 -->
+    <sample name="voice.wav" path="C:/..." normGain="1.0" embedded="1"
+            format="flac" srcSampleRate="44100" normScale="1.0">
+      <APVTS .../>                    <!-- スロットごとの設定 -->
+      BASE64...
+    </sample>
+    ...
+  </samples>
+
+  <!-- 旧ビルド互換: 選択中スロットを従来の場所にも書く（新形式を読める版はこちらを無視する） -->
+  <sample name="voice.wav" ... >BASE64...</sample>
+
+  <appearance mainColour="ff4bb4f5" bgOpacity="0.25" panelOpacity="1.0">BASE64(PNG)</appearance>
+</OtoMadState>
 ```
+
+- `stateVersion`: 1 = 単一 `<sample>` のみ / 2 = `<samples>` リスト。
+  古いビルドで開かれたとき「サンプル無し」と「壊れている」を区別できるようにする。
+- **複数サンプル**: 差し替えて聴き比べるための機能。スロットごとに素材・`normGain`・
+  APVTS を保持し、切り替えると設定が丸ごと入れ替わる。キャッシュは切替時に作り直す。
+  読み込み時の新スロットは「その時点の設定」を引き継ぐ（同条件で比較を始められる）。
+- 復元は APVTS に触れない専用経路で積む。読み込みと同じ経路を通すと
+  「直前スロットを現在の APVTS で上書き」が走り、復元済みの設定が壊れる。
+- スロット一覧はメッセージスレッド専用だが `getStateInformation` は任意スレッドから
+  呼ばれうるため、走査は `slotLock` 下のスナップショットで行い、重い FLAC エンコードは
+  ロックを離してから行う。FLAC は `SampleBuffer` ポインタをキーにキャッシュする
+  （ホストの autosave で毎回エンコードし直さないため）。
 
 - `embedSample` オプション（既定ON）。**原音SR** の PCM を FLACエンコード後にBase64。
   再生用の `data`（ホストSR変換済み）ではなく `original` を埋め込む。ロード時に
@@ -585,6 +628,36 @@ bool Voice::isFinished() const noexcept
   エンコード前にピーク正規化し、正規化係数を `normScale` として保存、ロード時に復元する
   （またはピークが1を超える素材は 32bit WAV にフォールバックする）。
 - ロード順: 埋め込み → パス → 両方失敗ならGUIに警告表示して無音（**クラッシュさせない**）。
+
+### 3.10 エディタ（ネイティブ / Web の2実装）
+
+エディタは2つあり、CMake の `OTOMAD_WEB_UI` で切り替える（既定 1 = Web）。
+**どちらを使ってもパラメータ定義は同一**（規約12）。UI は表示と無効化を変えるだけ。
+
+| | 実装 | 位置づけ |
+|---|---|---|
+| ネイティブ | `src/PluginEditor.*` | 従来の JUCE Component。WebView2 が無い環境のフォールバックも兼ねる |
+| Web | `src/WebEditor.*` + `resources/webui/*` | 既定。HTML/CSS/JS |
+
+- **パラメータ**は `WebSliderRelay` / `WebComboBoxRelay` / `WebToggleButtonRelay` と
+  対応する `…ParameterAttachment` で APVTS と双方向バインドする。
+- **それ以外**（波形ピーク・D&D のバイト列・鍵盤・REAPER モード一覧・状態表示・外観設定）は
+  `withNativeFunction` と `emitEventIfBrowserIsVisible` で受け渡す。
+- **アセットは BinaryData に埋め込み**、`ResourceProvider` でローカル配信する。
+  外部ネットワークへは一切アクセスしない。配信は許可リスト方式にして、
+  将来 `juce_add_binary_data` に足したものが自動的に Web から到達可能にならないようにする。
+- JUCE のフロントエンド JS（`juce-index.js` / `check_native_interop.js`）は
+  **configure 時に使用中の JUCE からコピー**する。手でベンダリングすると、JUCE のタグを
+  上げたとき C++ 側のプロトコルだけが変わって JS が取り残される。
+- WebView2 は**プラグインでは `withUserDataFolder` の指定が必須**。既定はホスト実行ファイル
+  基準（Program Files 等）で書き込めず生成に失敗し、JUCE は黙って IE バックエンドへ
+  フォールバックして真っ白な窓になる。
+- WebView2 ランタイムが無い環境では `areOptionsSupported` で判定してネイティブ版へ落とす
+  （規約15の精神: 黙って壊れた表示を返さない）。
+- **D&D は WebView2 から実パスを取得できない**ため、JS 側でバイト列を読み標準 base64 で
+  バックエンドへ渡す（`SampleLoader::loadFromMemory`）。転送中はファイルサイズの5〜6倍の
+  メモリを使うので上限（64MB）を設ける。`MemoryBlock::toBase64Encoding` は JUCE 独自形式で
+  JS の `btoa()` と互換が無いため、**`juce::Base64` を使うこと**。
 
 ---
 

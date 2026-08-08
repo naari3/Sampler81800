@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>OtoMadSampler</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><img class="brand-logo" src="logo.png" alt="音MAD SAMPLER"></div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="main">MAIN</button>
+    <button class="tab" data-tab="vibrato">VIBRATO</button>
+  </nav>
+  <div class="spacer"></div>
+  <button id="update-btn" class="badge" hidden></button>
+  <div class="errmsg" id="err"></div>
+  <div class="status" id="status">loading…</div>
+  <button class="btn icon" id="btn-settings" title="外観設定">⚙</button>
+</header>
+
+<div class="page" data-page="main">
+
+  <section class="panel">
+    <div class="panel-head">
+      <span class="led"></span><span class="title">SAMPLE</span>
+      <select id="sel-sample" class="head-select" title="読み込み済みサンプルの切り替え"></select>
+      <span class="head-name" id="sample-name">— no sample —</span>
+      <span class="spacer"></span>
+      <button class="btn" id="btn-remove" title="このサンプルをリストから削除">✕</button>
+      <button class="btn" id="btn-load">LOAD</button>
+      <button class="btn" id="btn-detect">DETECT ROOT</button>
+      <button class="btn" id="btn-normalize">NORMALIZE</button>
+    </div>
+
+    <div class="wave-wrap" id="wave-wrap">
+      <canvas id="wave"></canvas>
+      <div class="drop-hint" id="drop-hint">
+        <div class="drop-icon">⭳</div>
+        <div>音声ファイルをドロップ<span class="sub">クリックして選択 / 画像を落とすと背景になります</span></div>
+      </div>
+    </div>
+
+    <div class="strip">
+      <span class="chip"><b>START</b><i id="lbl-start">0.000</i></span>
+      <span class="chip"><b>END</b><i id="lbl-end">1.000</i></span>
+      <span class="chip"><b>LEN</b><i id="lbl-len">—</i></span>
+      <span class="spacer"></span>
+      <span class="tip">ホイール:ズーム / 右ドラッグ:スクロール / 左ドラッグ:トリム</span>
+    </div>
+
+    <div class="cache-bar" id="cache-bar" hidden><div id="cache-fill"></div><span id="cache-text"></span></div>
+  </section>
+
+  <div class="cols">
+    <section class="panel col">
+      <div class="panel-head"><span class="led"></span><span class="title">AMP ENV</span></div>
+      <canvas id="adsr" class="graph"></canvas>
+      <div class="knob-row">
+        <div class="knob-cell"><div class="knob" data-relay="attack"></div><div class="knob-label">ATTACK</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="decay"></div><div class="knob-label">DECAY</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="sustain"></div><div class="knob-label">SUSTAIN</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="release"></div><div class="knob-label">RELEASE</div><div class="knob-value"></div></div>
+      </div>
+    </section>
+
+    <section class="panel col">
+      <div class="panel-head"><span class="led"></span><span class="title">PITCH</span></div>
+      <div class="knob-row">
+        <div class="knob-cell"><div class="knob" data-relay="pitchSemi"></div><div class="knob-label">SEMI</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="pitchCents"></div><div class="knob-label">CENT</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="octave"></div><div class="knob-label">OCTAVE</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="rootKey"></div><div class="knob-label">ROOT</div><div class="knob-value"></div></div>
+      </div>
+      <div class="sep"></div>
+      <div class="knob-row">
+        <div class="knob-cell"><div class="knob" data-relay="gain"></div><div class="knob-label">LEVEL</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="portaTime"></div><div class="knob-label">GLIDE</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="maxVoices"></div><div class="knob-label">VOICES</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="bendRange"></div><div class="knob-label">BEND</div><div class="knob-value"></div></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="cols">
+    <section class="panel col">
+      <div class="panel-head"><span class="led"></span><span class="title">ENGINE</span></div>
+      <div class="row">
+        <label class="field"><span>ALGORITHM</span><select id="sel-algorithm"></select></label>
+        <label class="field"><span>DURATION</span><select id="sel-durationMode"></select></label>
+        <label class="field"><span>SYNC</span><select id="sel-syncLength"></select></label>
+        <label class="field"><span>PORTAMENTO</span><select id="sel-portaMode"></select></label>
+        <label class="field"><span>SHAPE</span><select id="sel-portaShape"></select></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>POLY</span><select id="sel-polyMode"></select></label>
+        <label class="field"><span>INTERP</span><select id="sel-interpQuality"></select></label>
+        <label class="check"><input type="checkbox" id="chk-phaseLock"><span>PHASE LOCK</span></label>
+        <label class="check"><input type="checkbox" id="chk-snapZeroCross"><span>SNAP ZC</span></label>
+      </div>
+      <div class="knob-row">
+        <div class="knob-cell"><div class="knob" data-relay="stretchAmount"></div><div class="knob-label">STRETCH</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="formant"></div><div class="knob-label">FORMANT</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="portaCurve"></div><div class="knob-label">CURVE</div><div class="knob-value"></div></div>
+        <div class="knob-cell"><div class="knob" data-relay="glideGroupMs"></div><div class="knob-label">GROUP</div><div class="knob-value"></div></div>
+      </div>
+    </section>
+
+    <section class="panel col">
+      <div class="panel-head"><span class="led"></span><span class="title">REAPER SHIFTER</span></div>
+      <div class="row">
+        <label class="field wide"><span>MODE</span><select id="sel-rmode"></select></label>
+        <label class="field wide"><span>SUB MODE</span><select id="sel-rsub"></select></label>
+      </div>
+      <div class="reaper-info" id="reaper-info">—</div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <span class="led"></span><span class="title">KEYBOARD</span>
+      <span class="spacer"></span><span class="tip">右クリックで ROOT を指定</span>
+    </div>
+    <div class="keys" id="keys"></div>
+  </section>
+</div>
+
+<!-- ============================= VIBRATO ============================= -->
+<div class="page" data-page="vibrato" hidden>
+  <section class="panel">
+    <div class="panel-head">
+      <span class="led"></span><span class="title">VIBRATO</span>
+      <span class="spacer"></span>
+      <span class="tip">発音 → DELAY 待機 → FADE で立ち上げ → DEPTH の深さで揺れる</span>
+    </div>
+    <canvas id="vib" class="graph tall"></canvas>
+    <div class="knob-row">
+      <div class="knob-cell"><div class="knob" data-relay="vibDepth"></div><div class="knob-label">DEPTH</div><div class="knob-value"></div></div>
+      <div class="knob-cell"><div class="knob" data-relay="vibRate"></div><div class="knob-label">RATE</div><div class="knob-value"></div></div>
+      <div class="knob-cell"><div class="knob" data-relay="vibDelay"></div><div class="knob-label">DELAY</div><div class="knob-value"></div></div>
+      <div class="knob-cell"><div class="knob" data-relay="vibFade"></div><div class="knob-label">FADE</div><div class="knob-value"></div></div>
+    </div>
+    <p class="dlg-note">
+      DEPTH を 0 にするとビブラートは無効です。<br>
+      WSOLA / Phase Vocoder / REAPER Shifter（Sync）はフレーム単位でピッチを固定するため揺れが粗くなります。
+      滑らかにしたい場合は Varispeed、または REAPER Shifter の Natural / Manual（キャッシュ再生）を使ってください。
+    </p>
+  </section>
+</div>
+
+<!-- ============================= 外観設定 ============================= -->
+<div class="overlay" id="settings" hidden>
+  <div class="dialog">
+    <div class="panel-head"><span class="led"></span><span class="title">APPEARANCE</span>
+      <span class="spacer"></span><button class="btn" id="set-close">CLOSE</button></div>
+    <div class="row">
+      <label class="field"><span>MAIN COLOUR</span><input type="color" id="set-colour"></label>
+      <label class="field grow"><span>BACKGROUND OPACITY <i id="set-oplbl">0.25</i></span>
+        <input type="range" id="set-opacity" min="0" max="1" step="0.01"></label>
+    </div>
+    <div class="row">
+      <label class="field grow"><span>PANEL OPACITY <i id="set-palbl">1.00</i></span>
+        <input type="range" id="set-panel" min="0.1" max="1" step="0.01"></label>
+    </div>
+    <div class="row">
+      <button class="btn" id="set-pick">背景画像を選択…</button>
+      <button class="btn" id="set-clear">背景をクリア</button>
+      <span class="spacer"></span>
+      <button class="btn" id="set-default">全インスタンスの既定にする</button>
+    </div>
+    <div class="swatches" id="set-swatches"></div>
+    <p class="dlg-note">背景は差し替えられますが、ロゴは差し替えられません。<br>
+      画像ファイルをウィンドウにドロップしても背景に設定できます。</p>
+  </div>
+</div>
+
+<div id="bg-layer"></div>
+<input type="file" id="file-input" accept=".wav,.aiff,.aif,.flac,.mp3,.ogg" hidden>
+<input type="file" id="bg-input" accept="image/*" hidden>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -19,6 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Web UI は WebView2 を静的リンクする（JUCE の FindWebView2 が NuGet フォルダを見る）
+      - name: Install WebView2 SDK
+        shell: pwsh
+        run: |
+          Install-Package Microsoft.Web.WebView2 -Scope CurrentUser `
+            -RequiredVersion 1.0.3485.44 -Source nuget.org -Force | Out-Null
+
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 

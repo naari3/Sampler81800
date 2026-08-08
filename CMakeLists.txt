@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(OtoMadSampler VERSION 0.1.1 LANGUAGES C CXX)
+project(OtoMadSampler VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,12 +35,14 @@ juce_add_plugin(OtoMadSampler
     NEEDS_MIDI_OUTPUT           FALSE
     IS_MIDI_EFFECT              FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    NEEDS_WEBVIEW2              TRUE   # Web UI (試作): WebView2 を静的リンク
     COPY_PLUGIN_AFTER_BUILD     FALSE
     VST3_CATEGORIES             "Instrument" "Sampler")
 
 target_sources(OtoMadSampler PRIVATE
     src/PluginProcessor.cpp
     src/PluginEditor.cpp
+    src/WebEditor.cpp
     src/core/SampleLoader.cpp
     src/core/SourceReader.cpp
     src/core/Voice.cpp
@@ -60,8 +62,26 @@ target_sources(OtoMadSampler PRIVATE
 
 target_include_directories(OtoMadSampler PRIVATE src)
 
+# JUCE のフロントエンド JS（native interop）は「使っている JUCE から」configure 時に取り出す。
+# リポジトリに手でコピーすると、JUCE のタグを上げたとき C++ 側のプロトコルだけが変わって
+# JS が取り残される（構造的に検知できない）。ここでコピーすればバージョンずれが起こらない。
+set(OTOMAD_WEBUI_JS_DIR "${CMAKE_BINARY_DIR}/webui_js")
+file(MAKE_DIRECTORY "${OTOMAD_WEBUI_JS_DIR}")
+file(COPY
+        "${juce_SOURCE_DIR}/modules/juce_gui_extra/native/javascript/index.js"
+        "${juce_SOURCE_DIR}/modules/juce_gui_extra/native/javascript/check_native_interop.js"
+     DESTINATION "${OTOMAD_WEBUI_JS_DIR}")
+file(RENAME "${OTOMAD_WEBUI_JS_DIR}/index.js" "${OTOMAD_WEBUI_JS_DIR}/juce-index.js")
+
 # ロゴ等の埋め込みリソース → BinaryData::logo_png
-juce_add_binary_data(OtoMadSamplerAssets SOURCES resources/logo.png)
+# Web UI (試作) のアセットも埋め込み、実行時に WebBrowserComponent へローカル配信する。
+juce_add_binary_data(OtoMadSamplerAssets SOURCES
+    resources/logo.png
+    resources/webui/index.html
+    resources/webui/style.css
+    resources/webui/app.js
+    ${OTOMAD_WEBUI_JS_DIR}/juce-index.js
+    ${OTOMAD_WEBUI_JS_DIR}/check_native_interop.js)   # juce-index.js が import するので必須
 target_link_libraries(OtoMadSampler PRIVATE OtoMadSamplerAssets)
 
 target_compile_features(OtoMadSampler PRIVATE cxx_std_20)
@@ -72,7 +92,11 @@ target_compile_options(OtoMadSampler PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 
 target_compile_definitions(OtoMadSampler PUBLIC
     OTOMAD_VERSION="${PROJECT_VERSION}"          # アップデート確認用の自バージョン
-    JUCE_WEB_BROWSER=0
+    # Web UI (feature/web-ui): WebBrowserComponent + WebView2 を有効化
+    # OTOMAD_WEB_UI=0 にすればネイティブ版エディタに戻せる（比較用）。
+    JUCE_WEB_BROWSER=1
+    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+    OTOMAD_WEB_UI=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     # JUCE_DISPLAY_SPLASH_SCREEN=0 は商用ライセンス時のみ可 (DESIGN.md §0.3)。

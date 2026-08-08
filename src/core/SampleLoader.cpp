@@ -102,6 +102,26 @@ std::shared_ptr<SampleBuffer> loadFile (const juce::File& file,
     return sb;
 }
 
+std::shared_ptr<SampleBuffer> loadFromMemory (const void* data, std::size_t size,
+                                              const juce::String& displayName,
+                                              double hostSampleRate,
+                                              juce::AudioFormatManager& fm)
+{
+    if (data == nullptr || size == 0)
+        return nullptr;
+
+    // 内部コピーを持たせる（呼び出し元のバッファ寿命に依存しないようにする）
+    auto stream = std::make_unique<juce::MemoryInputStream> (data, size, true);
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (std::move (stream)));
+    if (reader == nullptr)
+        return nullptr;
+
+    auto sb = buildFromReader (*reader, hostSampleRate);
+    if (sb != nullptr)
+        sb->name = displayName.toStdString();   // path は不明（D&Dでバイト列のみ受領）
+    return sb;
+}
+
 std::shared_ptr<SampleBuffer> loadFromFlacMemory (const void* data, std::size_t size,
                                                   double hostSampleRate)
 {

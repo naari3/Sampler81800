@@ -38,6 +38,11 @@ inline constexpr const char* formant       = "formant";
 inline constexpr const char* reaperMode    = "reaperMode";
 inline constexpr const char* reaperSubMode = "reaperSubMode";
 inline constexpr const char* phaseLock     = "phaseLock";
+// ビブラート（発音から delay 経過後、fade で depth へ到達）
+inline constexpr const char* vibDepth      = "vibDepth";
+inline constexpr const char* vibRate       = "vibRate";
+inline constexpr const char* vibDelay      = "vibDelay";
+inline constexpr const char* vibFade       = "vibFade";
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -102,6 +107,16 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperMode, 1 },    "REAPER Mode",    0, 127,   0));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 32767, 0));
     layout.add (std::make_unique<AudioParameterBool>  (ParameterID { phaseLock, 1 }, "Phase Lock", true));
+
+    // ビブラート。Depth=0 で無効。Delay は効き始めるまで、Fade は最大振幅に達するまでの時間。
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { vibDepth, 1 }, "Vib Depth",
+                    NormalisableRange<float> (0.0f, 200.0f, 0.1f, 0.5f), 0.0f));      // セント
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { vibRate, 1 },  "Vib Rate",
+                    NormalisableRange<float> (0.1f, 20.0f, 0.01f, 0.5f), 5.0f));      // Hz
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { vibDelay, 1 }, "Vib Delay",
+                    NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 0.0f));     // ms
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { vibFade, 1 },  "Vib Fade",
+                    NormalisableRange<float> (0.0f, 2000.0f, 1.0f, 0.4f), 200.0f));   // ms
 
     return layout;
 }

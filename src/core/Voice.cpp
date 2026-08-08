@@ -32,6 +32,9 @@ void Voice::prepare (double sr, int maxBlock, int numChannels,
     porta.setSampleRate (sr);
     timeRatioSmooth.reset (sr, 0.02);
     timeRatioSmooth.setCurrentAndTargetValue (1.0);
+    vibDepthSmooth.reset (sr, 0.02);
+    vibDepthSmooth.setCurrentAndTargetValue (0.0f);
+    vibrato.prepare (sr);
     active = false;
     stealing = false;
     stealGain = 1.0f;
@@ -121,6 +124,7 @@ void Voice::startNote (const Pending& p) noexcept
     released = false;
     drainCounter = 0;
 
+
     varispeed.reset();
     wsola.reset();
     phaseVocoder.reset();
@@ -133,6 +137,12 @@ void Voice::startNote (const Pending& p) noexcept
 
     // エンベロープ開始をエンジンのレイテンシ分だけ遅らせる（音の出力遅延と揃える）
     const int lat = activeEngine ? activeEngine->getIntrinsicLatency() : 0;
+
+    // ビブラートの Delay/Fade も同じ基準にする。負から始めることで、
+    // エンベロープと同じタイミング（＝実際に音が出る瞬間）を 0 とみなす。
+    // 揃えないと高レイテンシのエンジンで「音より先に揺れ始める」ように聞こえる。
+    vibrato.reset (-(double) lat);
+
     pendingOff = -1;
     if (lat <= 0)
     {
@@ -229,8 +239,21 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
     // prePitchedSemi は sample に既に焼き込まれたシフト量。二重に掛からないよう差し引く。
     const float base = params.pitchSemi + params.pitchCents * 0.01f
                      + params.pitchBendSemi - (float) params.rootKey - prePitchedSemi;
+
+    // ビブラート: 発音から delay 経過後、fade をかけて depth（セント）へ到達する三角関数変調。
+    // 規約4に従い半音（対数）ドメインで base に足してから比へ変換する。
+    vibDepthSmooth.setTargetValue (params.vibDepthCents * 0.01f);   // セント → 半音
+    VibratoLfo::Config vc;
+    vc.rateHz       = params.vibRateHz;
+    vc.delaySamples = (double) params.vibDelayMs * 0.001 * sampleRate;
+    vc.fadeSamples  = (double) params.vibFadeMs  * 0.001 * sampleRate;
+
     for (int i = 0; i < n; ++i)
-        ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base) / 12.0f);
+    {
+        vc.depthSemi = vibDepthSmooth.getNextValue();               // 深さだけ平滑化（規約#14）
+        const float mod = vibrato.next (vc);
+        ratioBuf[(std::size_t) i] = std::exp2 ((noteBuf[(std::size_t) i] + base + mod) / 12.0f);
+    }
 
     for (int ch = 0; ch < nch; ++ch)
         scratchPtrs[(std::size_t) ch] = scratch[(std::size_t) ch].data();
