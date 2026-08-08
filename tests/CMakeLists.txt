@@ -19,6 +19,7 @@ add_executable(otomad_tests
     test_voice_alloc.cpp
     test_wsola.cpp
     test_phasevocoder.cpp
+    test_vibrato.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
     ${CMAKE_SOURCE_DIR}/src/core/PortamentoGenerator.cpp
     ${CMAKE_SOURCE_DIR}/src/core/GlideMatcher.cpp

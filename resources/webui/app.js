@@ -55,6 +55,7 @@ const FMT = {
   sampleEnd:     v => v.toFixed (3),
   portaCurve:    v => v.toFixed (2),
   maxVoices:     v => v.toFixed (0),
+  glideGroupMs:  fmtMs,
   bendRange:     v => v.toFixed (0),
   stretchAmount: v => v.toFixed (2) + "x",
   formant:       v => v.toFixed (1),
@@ -196,7 +197,8 @@ import ("./juce-index.js").then ((juce) => {
   }
 
   //================================================================ combo / toggle
-  for (const id of ["algorithm", "durationMode", "syncLength", "portaMode"]) {
+  for (const id of ["algorithm", "durationMode", "syncLength", "portaMode",
+                    "polyMode", "portaShape", "interpQuality"]) {
     const sel = document.getElementById ("sel-" + id);
     if (! sel) continue;
     const state = C[id] = getComboBoxState (id);
@@ -224,9 +226,10 @@ import ("./juce-index.js").then ((juce) => {
     });
   }
 
-  {
-    const chk = document.getElementById ("chk-phaseLock");
-    const state = getToggleState ("phaseLock");
+  for (const id of ["phaseLock", "snapZeroCross"]) {
+    const chk = document.getElementById ("chk-" + id);
+    if (! chk) continue;
+    const state = getToggleState (id);
     const render = () => { chk.checked = state.getValue(); };
     state.valueChangedEvent.addListener (render);
     state.propertiesChangedEvent.addListener (render);
@@ -257,8 +260,10 @@ import ("./juce-index.js").then ((juce) => {
 
     dimKnob ("formant",    isReaper);          // フォルマントは REAPER キャッシュのみ焼き込み
     dimKnob ("stretchAmount", dur === 2);      // Stretch は Manual のみ
-    dimKnob ("portaTime",  por !== 0);         // Glide / Curve は Porta が Off でないとき
+    dimKnob ("portaTime",  por !== 0);         // Glide / Curve / Group は Porta が Off でないとき
     dimKnob ("portaCurve", por !== 0);
+    dimKnob ("glideGroupMs", por !== 0);
+    dimEl (document.getElementById ("sel-portaShape"), por !== 0);
 
     // ビブラートは Depth>0 のときだけ Rate/Delay/Fade が意味を持つ
     const vibOn = st ("vibDepth").getScaledValue() > 0.01;
@@ -381,12 +386,18 @@ import ("./juce-index.js").then ((juce) => {
     refreshWave(); refreshSampleList();
   });
 
+  let lastWaveKey = null;
   async function refreshWave () {
     const r = await nfGetWaveform();
     peaks    = r && r.peaks ? r.peaks : null;
     normGain = r && r.normGain ? r.normGain : 1;
     sampleSeconds = r && r.seconds ? r.seconds : 0;
-    view = { start: 0, end: 1 };
+
+    // 素材が変わったときだけズームを全体に戻す。
+    // NORMALIZE でも version は進むので、毎回リセットすると表示位置を失う。
+    const key = (r && r.name ? r.name : "") + "|" + sampleSeconds.toFixed (6);
+    if (key !== lastWaveKey) { view = { start: 0, end: 1 }; lastWaveKey = key; }
+
     if (nameEl) nameEl.textContent = (r && r.name) ? r.name : "— no sample —";
     if (dropHint) dropHint.hidden = !! (peaks && peaks.length);
     drawWave(); updateStrip();
@@ -399,9 +410,11 @@ import ("./juce-index.js").then ((juce) => {
     const fx = e.offsetX / waveCanvas.clientWidth;
     const anchor = view.start + fx * (view.end - view.start);
     const factor = e.deltaY < 0 ? 1 / 1.2 : 1.2;
-    let span = Math.min (1, Math.max (0.0005, (view.end - view.start) * factor));
-    let st = Math.min (Math.max (anchor - fx * span, 0), 1 - span);
-    view = { start: st, end: st + span };
+    const span = Math.min (1, Math.max (0.0005, (view.end - view.start) * factor));
+    // 変数名を st にしない: 外側の st(id) ヘルパを隠してしまい、
+    // このブロックで st(...) を呼んだ瞬間に TDZ 例外になる（過去に何度も踏んだ罠）
+    const viewStart = Math.min (Math.max (anchor - fx * span, 0), 1 - span);
+    view = { start: viewStart, end: viewStart + span };
     drawWave();
   }, { passive: false });
 
@@ -436,8 +449,8 @@ import ("./juce-index.js").then ((juce) => {
     if (panning) {
       const dx = (e.clientX - panX) / waveCanvas.clientWidth; panX = e.clientX;
       const span = view.end - view.start;
-      let st = Math.min (Math.max (view.start - dx * span, 0), 1 - span);
-      view = { start: st, end: st + span };
+      const viewStart = Math.min (Math.max (view.start - dx * span, 0), 1 - span);   // st は外側ヘルパ名
+      view = { start: viewStart, end: viewStart + span };
       drawWave();
     } else if (trimming) {
       const fx = e.offsetX / waveCanvas.clientWidth;
@@ -453,9 +466,18 @@ import ("./juce-index.js").then ((juce) => {
 
   //---------------------------------------------------------------- D&D / file
   // WebView2 では dataTransfer から実パスが取れないため、バイト列を読んで backend へ渡す。
+  // base64 で渡す都合上、転送中はファイルサイズの 5〜6 倍のメモリを使い、
+  // エンコードもメッセージスレッドを塞ぐ。大きすぎるファイルは明示的に断る。
+  const MAX_TRANSFER_MB = 64;
+
   async function sendFile (file) {
     try {
       if (! file) { note ("drop: file オブジェクトが取得できません"); return; }
+      if (file.size > MAX_TRANSFER_MB * 1024 * 1024) {
+        note ("ファイルが大きすぎます（上限 " + MAX_TRANSFER_MB + " MB）: "
+              + file.name + " / " + (file.size / 1048576).toFixed (1) + " MB");
+        return;
+      }
       note ("読み込み中: " + file.name + " (" + Math.round (file.size / 1024) + " KB)");
 
       const buf = new Uint8Array (await file.arrayBuffer());
@@ -615,16 +637,17 @@ import ("./juce-index.js").then ((juce) => {
     const dx = sx - lastPos.x, dy = sy - lastPos.y;
     lastPos = { x: sx, y: sy };
     // スケール値(ms) → 正規化値。JS 側に公開された変換が無いので properties から自前で計算する。
-    const toNorm = (st, scaled) => {
-      const p = st.properties;
+    // 引数名を st にしない（外側の st(id) ヘルパを隠さないため）
+    const toNorm = (state, scaled) => {
+      const p = state.properties;
       const t = (scaled - p.start) / (p.end - p.start);
       return Math.min (1, Math.max (0, Math.pow (Math.min (1, Math.max (0, t)), p.skew)));
     };
     const adjMs = (id, dpx) => {
-      const st = S[id];
-      const k  = Math.sqrt (Math.max (1, st.properties.end)) / Math.max (1, adsrCanvas.width);
-      const sq = Math.sqrt (Math.max (0, st.getScaledValue())) + dpx * k;
-      st.setNormalisedValue (toNorm (st, sq * sq));
+      const state = st (id);
+      const k  = Math.sqrt (Math.max (1, state.properties.end)) / Math.max (1, adsrCanvas.width);
+      const sq = Math.sqrt (Math.max (0, state.getScaledValue())) + dpx * k;
+      state.setNormalisedValue (toNorm (state, sq * sq));
     };
     if (grab === 0) adjMs ("attack", dx);
     else if (grab === 1) {

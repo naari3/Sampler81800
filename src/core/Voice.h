@@ -6,6 +6,7 @@
 #include "SampleBuffer.h"
 #include "SourceReader.h"
 #include "PortamentoGenerator.h"
+#include "VibratoLfo.h"
 #include "pitch/IPitchEngine.h"
 #include "pitch/VarispeedEngine.h"
 #include "pitch/WsolaEngine.h"
@@ -127,8 +128,7 @@ private:
     long   drainCounter = 0;
 
     // ビブラートはボイス固有の状態（位相・発音からの経過）。規約9に従い共有しない。
-    double vibPhase   = 0.0;
-    double vibElapsed = 0.0;   // 発音からの経過サンプル数
+    VibratoLfo vibrato;
     double sampleRate = 44100.0;
 
     SourceReader        reader;
@@ -145,6 +145,9 @@ private:
     Params              params;
     EngineControl       control;
     juce::SmoothedValue<double> timeRatioSmooth;
+    // ビブラート深さは自動化されうるので平滑化する（規約#14: 段差はピッチのジッパーノイズになる）。
+    // Rate は位相の増分にしか効かず段差が可聴でないため平滑化しない。
+    juce::SmoothedValue<float>  vibDepthSmooth;
 
     bool    stealing = false;
     float   stealGain = 1.0f;

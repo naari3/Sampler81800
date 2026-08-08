@@ -16,16 +16,18 @@ namespace
         P::portaTime, P::portaCurve, P::maxVoices, P::bendRange,
         P::stretchAmount, P::formant,
         P::vibDepth, P::vibRate, P::vibDelay, P::vibFade,
+        P::glideGroupMs,
     };
 
     // getComboBoxState(name)
     const char* const kComboParams[] =
     {
         P::algorithm, P::durationMode, P::syncLength, P::portaMode,
+        P::polyMode, P::portaShape, P::interpQuality,
     };
 
     // getToggleState(name)
-    const char* const kToggleParams[] = { P::phaseLock };
+    const char* const kToggleParams[] = { P::phaseLock, P::snapZeroCross };
 
     juce::String mimeForPath (const juce::String& path)
     {
@@ -40,6 +42,19 @@ namespace
     // "/style.css" → BinaryData の "style_css" を引く。
     // juce_add_binary_data の識別子はハイフン等が「除去」される（juce-index.js → juceindex_js）ため、
     // originalFilenames と照合する。resolvedName には実際に引いたファイル名を返す（MIME 判定用）。
+    // Web に出してよいアセットだけを明示的に許可する。
+    // 埋め込み資産すべてを basename で引くと、将来 juce_add_binary_data に足したものが
+    // 自動的に Web から到達可能になってしまうため。
+    bool isServable (const juce::String& name)
+    {
+        static const char* const allowed[] =
+            { "index.html", "style.css", "app.js", "juce-index.js", "check_native_interop.js", "logo.png" };
+        for (auto* a : allowed)
+            if (name.equalsIgnoreCase (a))
+                return true;
+        return false;
+    }
+
     const char* findBinaryResource (const juce::String& path, int& sizeOut, juce::String& resolvedName)
     {
         auto name = path.upToFirstOccurrenceOf ("?", false, false)
@@ -47,6 +62,9 @@ namespace
                         .fromLastOccurrenceOf ("/", false, false);
         if (name.isEmpty())
             name = "index.html";   // ルート "/" は index.html を返す
+
+        if (! isServable (name))
+            return nullptr;
 
         for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
             if (name.equalsIgnoreCase (BinaryData::originalFilenames[i]))
@@ -59,6 +77,21 @@ namespace
 }
 
 //==============================================================================
+bool OtoMadSamplerWebEditor::isWebViewAvailable()
+{
+    // WebView2 ランタイムの有無を実際に問い合わせる（未導入だと生成に失敗し、
+    // JUCE は黙って IE バックエンドへ落ちて真っ白な窓になる）。
+    const auto userData = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getChildFile ("OtoMadSampler-WebView2");
+    userData.createDirectory();
+
+    return juce::WebBrowserComponent::areOptionsSupported (
+        juce::WebBrowserComponent::Options{}
+            .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
+            .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
+                                         .withUserDataFolder (userData)));
+}
+
 OtoMadSamplerWebEditor::OtoMadSamplerWebEditor (OtoMadSamplerProcessor& p)
     : AudioProcessorEditor (&p), processor (p)
 {
@@ -278,10 +311,15 @@ void OtoMadSamplerWebEditor::nfReaperModes (const juce::Array<juce::var>&,
 void OtoMadSamplerWebEditor::nfSetReaperMode (const juce::Array<juce::var>& args,
                                               juce::WebBrowserComponent::NativeFunctionCompletion complete)
 {
+    // ホストのオートメーション記録が正しく動くよう、ジェスチャで挟む
     auto setInt = [this] (const char* id, int v)
     {
         if (auto* p = dynamic_cast<juce::AudioParameterInt*> (processor.getAPVTS().getParameter (id)))
+        {
+            p->beginChangeGesture();
             *p = v;
+            p->endChangeGesture();
+        }
     };
     if (args.size() >= 1) setInt (P::reaperMode,    (int) args[0]);
     if (args.size() >= 2) setInt (P::reaperSubMode, (int) args[1]);
@@ -448,7 +486,21 @@ void OtoMadSamplerWebEditor::timerCallback()
         web->emitEventIfBrowserIsVisible ("appearanceChanged", juce::var (o));
     }
 
-    // 状態（キャッシュ進捗・REAPERモード名・更新有無）。内容が変わったときだけ送る。
+    // 状態（キャッシュ進捗・REAPERモード名・更新有無）。
+    // 10Hz で回るので、まず安価なスカラー比較で早期に抜ける（毎回 JSON 化しない）。
+    {
+        const bool  busy = processor.isCacheBusy();
+        const int   prog = juce::roundToInt (processor.getCacheProgress() * 100.0f);
+        const bool  fb   = processor.isEngineFallbackActive();
+        const bool  upd  = processor.isUpdateAvailable();
+        const int   rmv  = lastReaperMode * 1000 + lastReaperSubMode;
+        if (busy == lastBusy && prog == lastProgPct && fb == lastFallback
+            && upd == lastUpdateAvail && rmv == lastReaperKey)
+            return;
+        lastBusy = busy; lastProgPct = prog; lastFallback = fb;
+        lastUpdateAvail = upd; lastReaperKey = rmv;
+    }
+
     auto* s = new juce::DynamicObject();
     s->setProperty ("cacheBusy",     processor.isCacheBusy());
     s->setProperty ("cacheProgress", processor.getCacheProgress());

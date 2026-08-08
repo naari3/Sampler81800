@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -71,7 +72,8 @@ public:
     const otomad::SampleBuffer* getActiveSample() const noexcept { return activeSample.load(); }
 
     // 複数サンプルの保持と切り替え（メッセージスレッド）。差し替えて聴き比べるための機能。
-    int          getSampleCount() const noexcept { return (int) sampleList.size(); }
+    int          getSampleCount() const noexcept
+    { const juce::ScopedLock sl (slotLock); return (int) sampleList.size(); }
     juce::String getSampleName (int index) const;
     int          getActiveIndex() const noexcept { return activeIndex.load(); }
     void         selectSample (int index);
@@ -174,7 +176,15 @@ private:
     void updateVoiceParams() noexcept;
     void publishSample (std::shared_ptr<const otomad::SampleBuffer> sb);   // 読み込み完了時に公開
     void addSampleImpl (std::shared_ptr<const otomad::SampleBuffer> sb);   // メッセージスレッドで実処理
-    void restoreSample (const juce::XmlElement& sampleXml);                // §3.9 復元
+
+    // スロットと現在状態(APVTS/normGain)の同期はこの2つだけが担う（取りこぼし防止）
+    void saveActiveToSlot();
+    void loadSlotToActive (int index);
+    // 復元専用: APVTS に触れずスロットを積むだけ
+    void appendRestoredSlot (std::shared_ptr<const otomad::SampleBuffer> sb,
+                             float norm, juce::ValueTree params);
+    // §3.9 復元: 読み込んで返すだけ（公開はしない）
+    std::shared_ptr<otomad::SampleBuffer> restoreSample (const juce::XmlElement& sampleXml);
 
     juce::AudioProcessorValueTreeState apvts;
     juce::MidiKeyboardState            keyboardState;
@@ -237,10 +247,20 @@ private:
     // 読み込み済みサンプルのリスト（メッセージスレッド専用）。切り替えて聴き比べるため複数保持する。
     // ノーマライズ倍率はサンプルごとに持つ。
     // パラメータもスロットごとに保持し、切り替えるとその設定に丸ごと切り替わる。
+    // 変更はメッセージスレッドのみだが、getStateInformation は任意スレッドから呼ばれうるので
+    // 走査中の再確保（use-after-free）を防ぐため slotLock で保護する。
     std::vector<std::shared_ptr<const otomad::SampleBuffer>> sampleList;
     std::vector<float>          sampleNorm;
     std::vector<juce::ValueTree> sampleParams;
     std::atomic<int>            activeIndex { -1 };
+    juce::CriticalSection       slotLock;
+
+    // 保存用 FLAC のキャッシュ。SampleBuffer は公開後に変化しないのでポインタをキーにできる。
+    // ホストは autosave で頻繁に保存するため、毎回エンコードし直さない。
+    struct FlacBlob { juce::MemoryBlock data; float normScale = 1.0f; bool ok = false; };
+    std::map<const otomad::SampleBuffer*, FlacBlob> flacCache;
+    juce::CriticalSection flacLock;
+    const FlacBlob& getFlacFor (const otomad::SampleBuffer& sb);
 
     // RTアクセス用にキャッシュしたパラメータ atomic
     std::atomic<float>* pPitchSemi   = nullptr;
@@ -280,6 +300,8 @@ private:
     double hostBpm = 120.0;
     bool   hostBpmValid = false;
     int    lastReportedLatency = -1;
+    // processBlock から「望ましいレイテンシ」を受け渡す（実際の報告はメッセージスレッド）
+    std::atomic<int> pendingLatency { -1 };
 
     // アップデート確認の結果（バックグラウンドで書き, GUIから読む）
     std::atomic<bool> updateCheckStarted { false };
