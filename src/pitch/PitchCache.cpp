@@ -24,7 +24,7 @@ using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 
 bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
                             double sampleRate, float formant, double timeRatio,
-                            float start01, float end01)
+                            float start01, float end01, int elaMode)
 {
     // 微小変化での再レンダリング連発を避けるため量子化
     const float  fq = std::round (formant * 4.0f) / 4.0f;        // 0.25半音刻み
@@ -36,7 +36,8 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
         && std::abs (sampleRate - curSr) < 1.0e-6
         && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6
-        && std::abs (sq - curStart) < 1.0e-6 && std::abs (eq - curEnd) < 1.0e-6)
+        && std::abs (sq - curStart) < 1.0e-6 && std::abs (eq - curEnd) < 1.0e-6
+        && elaMode == curElaMode)
         return false;
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
@@ -44,7 +45,7 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     reqLo.store (0); reqHi.store (0);
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
-    curFormant = fq; curTimeRatio = tq; curStart = sq; curEnd = eq;
+    curFormant = fq; curTimeRatio = tq; curStart = sq; curEnd = eq; curElaMode = elaMode;
     ++curGen;   // 設定が変わった → 進行中のレンダリングは無効化される
     return true;
 }
@@ -91,22 +92,27 @@ bool PitchCache::renderPending()
 std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
 {
     // 設定のスナップショット
-    const SampleBuffer* src; int mode, sub; double sr; float formant; double timeRatio; float start, end;
+    const SampleBuffer* src; int mode, sub, elaMode; double sr; float formant; double timeRatio; float start, end;
     {
         std::lock_guard<std::mutex> lock (ownerLock);
         src = curSrc; mode = curMode; sub = curSub; sr = curSr;
         formant = curFormant; timeRatio = curTimeRatio;
-        start = curStart; end = curEnd;
+        start = curStart; end = curEnd; elaMode = curElaMode;
         usedGen = curGen;
     }
-    if (api == nullptr || src == nullptr || src->numSamples <= 0)
+    if (src == nullptr || src->numSamples <= 0)
         return nullptr;
 
-    auto getPS = reinterpret_cast<ReaperGetPitchShiftAPI_t> (api->getFunction ("ReaperGetPitchShiftAPI"));
-    if (getPS == nullptr)
-        return nullptr;
-    IReaperPitchShift* ps = getPS (REAPER_PITCHSHIFT_API_VER);
-    if (ps == nullptr)
+    // REAPER 上なら REAPER のピッチシフト API を使う。
+    // それ以外でも、élastique DLL 直叩き（実験機能）が使えるならそちらで代替する。
+    IReaperPitchShift* ps = nullptr;
+    if (api != nullptr)
+        if (auto getPS = reinterpret_cast<ReaperGetPitchShiftAPI_t> (api->getFunction ("ReaperGetPitchShiftAPI")))
+            ps = getPS (REAPER_PITCHSHIFT_API_VER);
+
+    const bool useDirect = (ps == nullptr)
+                        && (elastique != nullptr) && elastique->isAvailable();
+    if (ps == nullptr && ! useDirect)
         return nullptr;
 
     const int    numCh = std::max (1, src->numChannels);
@@ -127,6 +133,29 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
         for (std::int64_t i = base; i < endIdx; ++i)
             srcPeak = std::max (srcPeak, std::abs ((float) src->sampleAtRaw (ch, i)));
 
+    const std::int64_t n = endIdx - base;   // トリム範囲の長さ
+    // 目標出力長（Manualストレッチ等で長さが変わる）。set_tempo(timeRatio) → 出力 ≈ n / timeRatio。
+    const std::int64_t expectedLen = timeRatio > 1.0e-6
+        ? (std::int64_t) std::llround ((double) n / timeRatio) : n;
+    const std::int64_t maxLead = (std::int64_t) (0.3 * sr);   // 先頭で除去する上限
+
+    std::vector<std::vector<float>> out;
+    auto outLen = [&]() -> std::int64_t { return out.empty() ? 0 : (std::int64_t) out[0].size(); };
+
+    if (useDirect)
+    {
+        // --- élastique DLL 直叩き（REAPER 外での代替。実験的・再配布不可）---
+        // REAPER のモード/サブモード番号とは体系が違うので、専用パラメータで選ぶ。
+        // ストレッチ / モードごとの音程範囲外 / フォルマントは非対応。その場合は空が返るので
+        // キャッシュを作らず nullptr を返す＝規約15どおり Varispeed 再生にフォールバックする。
+        out = elastique->renderOffline (*src, base, n, numCh, sr, shift, timeRatio,
+                                        elaMode == 1 ? ElastiqueDirect::Soloist
+                                                     : ElastiqueDirect::Pro);
+        if (out.empty() || out[0].empty())
+            return nullptr;
+    }
+    else
+    {
     ps->set_srate (sr);
     ps->set_nch (numCh);
     ps->set_shift (shift);
@@ -140,14 +169,9 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     ps->Reset();
 
     // --- オフライン・レンダリング（プローブ非依存の堅牢版）---
-    const std::int64_t n = endIdx - base;   // トリム範囲の長さ
-    // 目標出力長（Manualストレッチ等で長さが変わる）。set_tempo(timeRatio) → 出力 ≈ n / timeRatio。
-    const std::int64_t expectedLen = timeRatio > 1.0e-6
-        ? (std::int64_t) std::llround ((double) n / timeRatio) : n;
-
     const int chunk = 1024;
     std::vector<double> pull ((std::size_t) chunk * (std::size_t) numCh, 0.0);
-    std::vector<std::vector<float>> out ((std::size_t) numCh);
+    out.assign ((std::size_t) numCh, {});
     for (auto& c : out) c.reserve ((std::size_t) (expectedLen + 2 * (std::int64_t) sr));
 
     auto drain = [&]()
@@ -161,8 +185,6 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
                     out[(std::size_t) ch].push_back ((float) pull[(std::size_t) (i * numCh + ch)]);
         }
     };
-    auto outLen = [&]() -> std::int64_t { return out.empty() ? 0 : (std::int64_t) out[0].size(); };
-
     // 1) 実入力を供給（トリム範囲のみ）
     for (std::int64_t pos = 0; pos < n; pos += chunk)
     {
@@ -177,10 +199,8 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
         drain();
     }
 
-    // 2) 内部に溜まった本体を無音で押し出す（大レイテンシモード対策）。十分な長さになるまで、
-    //    または出力がこれ以上増えなくなるまで。
-    const std::int64_t maxLead = (std::int64_t) (0.3 * sr);            // 先頭で除去する上限
-    // 内部に溜まった本体を無音で押し出す。実音が揃う分（expLen＋先頭遅延＋余白）まで出れば十分なので
+    // 2) 内部に溜まった本体を無音で押し出す（大レイテンシモード対策）。
+    // 実音が揃う分（expLen＋先頭遅延＋余白）まで出れば十分なので
     // そこで止める（高速化）。tempo=1 だと供給した無音がそのまま 1:1 で出力に混ざるため、target で
     // 打ち切らないと無駄に大量の無音を処理してしまう。target・出力停止・上限のいずれかで終了。
     const std::int64_t target     = expectedLen + maxLead + (std::int64_t) (0.25 * sr);
@@ -203,6 +223,7 @@ std::shared_ptr<SampleBuffer> PitchCache::renderShift (int semi, int& usedGen)
     ps->FlushSamples();
     drain();
     delete ps;
+    }   // else（REAPER API 経路）ここまで
 
     // 3) 実音のオンセット（頭）を自動検出して整列（先頭の遅延/無音を除去, 上限 maxLead）
     const std::int64_t avail = outLen();

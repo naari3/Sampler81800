@@ -1,5 +1,6 @@
 #include "WebEditor.h"
 #include "BinaryData.h"
+#include "core/FfmpegDecoder.h"
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -23,7 +24,7 @@ namespace
     const char* const kComboParams[] =
     {
         P::algorithm, P::durationMode, P::syncLength, P::portaMode,
-        P::polyMode, P::portaShape, P::interpQuality,
+        P::polyMode, P::portaShape, P::interpQuality, P::elastiqueMode,
     };
 
     // getToggleState(name)
@@ -157,7 +158,14 @@ OtoMadSamplerWebEditor::OtoMadSamplerWebEditor (OtoMadSamplerProcessor& p)
         .withNativeFunction ("saveAppearanceDefault", fn (&OtoMadSamplerWebEditor::nfSaveAppearanceDefault))
         .withNativeFunction ("getSamples",    fn (&OtoMadSamplerWebEditor::nfGetSamples))
         .withNativeFunction ("selectSample",  fn (&OtoMadSamplerWebEditor::nfSelectSample))
-        .withNativeFunction ("removeSample",  fn (&OtoMadSamplerWebEditor::nfRemoveSample));
+        .withNativeFunction ("removeSample",  fn (&OtoMadSamplerWebEditor::nfRemoveSample))
+        .withNativeFunction ("getElastique",  fn (&OtoMadSamplerWebEditor::nfGetElastique))
+        .withNativeFunction ("setElastique",  fn (&OtoMadSamplerWebEditor::nfSetElastique))
+        .withNativeFunction ("browseElastique", fn (&OtoMadSamplerWebEditor::nfBrowseElastique))
+        .withNativeFunction ("spaceToHost",   fn (&OtoMadSamplerWebEditor::nfSpaceToHost))
+        .withNativeFunction ("getFfmpeg",     fn (&OtoMadSamplerWebEditor::nfGetFfmpeg))
+        .withNativeFunction ("setFfmpeg",     fn (&OtoMadSamplerWebEditor::nfSetFfmpeg))
+        .withNativeFunction ("browseFfmpeg",  fn (&OtoMadSamplerWebEditor::nfBrowseFfmpeg));
 
     web = std::make_unique<juce::WebBrowserComponent> (options);
     addAndMakeVisible (*web);
@@ -379,6 +387,125 @@ void OtoMadSamplerWebEditor::nfRemoveSample (const juce::Array<juce::var>& args,
     complete (true);
 }
 
+// JS: spaceToHost() — WebView が食った Space をホスト窓へ投げ直す（DAW の再生/停止）。
+void OtoMadSamplerWebEditor::nfSpaceToHost (const juce::Array<juce::var>&,
+                                            juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    // ホスト窓を探す起点はプラグインのエディタ窓（WebView の HWND ではなく、その親側）。
+    complete (processor.forwardSpaceKeyToHost (getWindowHandle()));
+}
+
+namespace
+{
+    // ffmpeg 設定の状態を JSON 化（available / path / found）
+    juce::var makeFfmpegState (const OtoMadSamplerProcessor& p)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("available", p.isFfmpegAvailable());
+        o->setProperty ("path",      p.getFfmpegPath());
+        // 未設定のときだけ「自動検出でここが見つかりますよ」を出す
+        o->setProperty ("found", p.isFfmpegAvailable() ? juce::String()
+                                                       : otomad::FfmpegDecoder::find().getFullPathName());
+        return juce::var (o);
+    }
+}
+
+// JS: getFfmpeg()
+void OtoMadSamplerWebEditor::nfGetFfmpeg (const juce::Array<juce::var>&,
+                                          juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (makeFfmpegState (processor));
+}
+
+// JS: setFfmpeg(path) — "-" で解除、空文字なら自動探索、それ以外は明示パス。
+void OtoMadSamplerWebEditor::nfSetFfmpeg (const juce::Array<juce::var>& args,
+                                          juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    const auto path = args.size() >= 1 ? args[0].toString() : juce::String();
+    if (path == "-")
+        processor.clearFfmpegPath();
+    else
+        processor.setFfmpegPath (path);
+
+    complete (makeFfmpegState (processor));
+}
+
+// JS: browseFfmpeg() — ネイティブのファイル選択（WebView からは実パスが取れない）
+void OtoMadSamplerWebEditor::nfBrowseFfmpeg (const juce::Array<juce::var>&,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    exeChooser = std::make_unique<juce::FileChooser> ("ffmpeg の実行ファイルを選択",
+                                                      juce::File(), "ffmpeg*");
+    juce::Component::SafePointer<OtoMadSamplerWebEditor> safe (this);
+    exeChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                             [safe, complete] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        if (const auto f = fc.getResult(); f.existsAsFile())
+            safe->processor.setFfmpegPath (f.getFullPathName());
+        complete (makeFfmpegState (safe->processor));
+    });
+}
+
+namespace
+{
+    // élastique 実験機能の状態を JSON 化（loaded / path / reaperHosted / found[]）
+    juce::var makeElastiqueState (const OtoMadSamplerProcessor& p)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("loaded",       p.isElastiqueLoaded());
+        o->setProperty ("path",         p.getElastiquePath());
+        o->setProperty ("reaperHosted", p.isReaperAvailable());
+
+        juce::Array<juce::var> cands;
+        for (const auto& c : otomad::ElastiqueDirect::defaultCandidates())
+            if (juce::File (juce::String (c)).existsAsFile())
+                cands.add (juce::String (c));
+        o->setProperty ("found", cands);
+        return juce::var (o);
+    }
+}
+
+// JS: getElastique() — 実験機能の状態（REAPER外で Shifter を使うための DLL 直叩き）
+void OtoMadSamplerWebEditor::nfGetElastique (const juce::Array<juce::var>&,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (makeElastiqueState (processor));
+}
+
+// JS: setElastique(path) — "-" で解除、空文字なら既定候補を自動探索、それ以外は明示パス。
+void OtoMadSamplerWebEditor::nfSetElastique (const juce::Array<juce::var>& args,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    const auto path = args.size() >= 1 ? args[0].toString() : juce::String();
+    if (path == "-")
+        processor.unloadElastiqueDll();
+    else
+        processor.loadElastiqueDll (path);
+
+    complete (makeElastiqueState (processor));
+}
+
+// JS: browseElastique() — ネイティブのファイル選択。WebView 側の <input type=file> では
+// フルパスが取れない（セキュリティ上意図的に隠される）ので、DLL だけはネイティブで選ぶ。
+void OtoMadSamplerWebEditor::nfBrowseElastique (const juce::Array<juce::var>&,
+                                                juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    dllChooser = std::make_unique<juce::FileChooser> ("elastique3.dll を選択",
+                                                      juce::File ("C:\\Program Files"), "*.dll");
+    // エディタが先に閉じられてもコールバックは飛んでくるので SafePointer で自身の生存を確認する。
+    juce::Component::SafePointer<OtoMadSamplerWebEditor> safe (this);
+    dllChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                             [safe, complete] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        const auto f = fc.getResult();
+        if (f.existsAsFile())
+            safe->processor.loadElastiqueDll (f.getFullPathName());
+        complete (makeElastiqueState (safe->processor));
+    });
+}
+
 // JS: getAppearance() — 色 / 背景の不透明度 / 背景画像(data URL)
 void OtoMadSamplerWebEditor::nfGetAppearance (const juce::Array<juce::var>&,
                                               juce::WebBrowserComponent::NativeFunctionCompletion complete)
@@ -486,6 +613,23 @@ void OtoMadSamplerWebEditor::timerCallback()
         web->emitEventIfBrowserIsVisible ("appearanceChanged", juce::var (o));
     }
 
+    // 読み込み失敗の通知。デコードは背景スレッドなので戻り値では返せない。
+    // status とは別イベントにする（status は安価なスカラー比較で早期棄却するため
+    // 文字列だけ変わったケースを取りこぼす）。
+    {
+        const auto err = processor.getLastLoadError();
+        if (err != lastLoadErrorSeen)
+        {
+            lastLoadErrorSeen = err;
+            if (err.isNotEmpty())
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty ("message", err);
+                web->emitEventIfBrowserIsVisible ("loadError", juce::var (o));
+            }
+        }
+    }
+
     // 状態（キャッシュ進捗・REAPERモード名・更新有無）。
     // 10Hz で回るので、まず安価なスカラー比較で早期に抜ける（毎回 JSON 化しない）。
     {
@@ -494,17 +638,21 @@ void OtoMadSamplerWebEditor::timerCallback()
         const bool  fb   = processor.isEngineFallbackActive();
         const bool  upd  = processor.isUpdateAvailable();
         const int   rmv  = lastReaperMode * 1000 + lastReaperSubMode;
+        // SHIFTER 欄の文言は durationMode / stretch でも変わる。これらは上のスカラーに
+        // 含まれないので、文字列そのものを比較対象に入れないと更新を取りこぼす。
+        const auto  shifter = processor.getShifterStatusText();
         if (busy == lastBusy && prog == lastProgPct && fb == lastFallback
-            && upd == lastUpdateAvail && rmv == lastReaperKey)
+            && upd == lastUpdateAvail && rmv == lastReaperKey && shifter == lastShifterText)
             return;
         lastBusy = busy; lastProgPct = prog; lastFallback = fb;
-        lastUpdateAvail = upd; lastReaperKey = rmv;
+        lastUpdateAvail = upd; lastReaperKey = rmv; lastShifterText = shifter;
     }
 
     auto* s = new juce::DynamicObject();
     s->setProperty ("cacheBusy",     processor.isCacheBusy());
     s->setProperty ("cacheProgress", processor.getCacheProgress());
-    s->setProperty ("reaper",        processor.isReaperAvailable() ? processor.getReaperModeText() : juce::String());
+    s->setProperty ("reaper",        processor.getShifterStatusText());
+    s->setProperty ("elastique",     processor.isElastiqueLoaded());
     s->setProperty ("fallback",      processor.isEngineFallbackActive());
     s->setProperty ("updateAvail",   processor.isUpdateAvailable());
     s->setProperty ("latest",        processor.getLatestVersion());

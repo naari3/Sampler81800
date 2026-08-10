@@ -38,6 +38,7 @@ inline constexpr const char* formant       = "formant";
 inline constexpr const char* reaperMode    = "reaperMode";
 inline constexpr const char* reaperSubMode = "reaperSubMode";
 inline constexpr const char* phaseLock     = "phaseLock";
+inline constexpr const char* elastiqueMode = "elastiqueMode";
 // ビブラート（発音から delay 経過後、fade で depth へ到達）
 inline constexpr const char* vibDepth      = "vibDepth";
 inline constexpr const char* vibRate       = "vibRate";
@@ -107,6 +108,12 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperMode, 1 },    "REAPER Mode",    0, 127,   0));
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { reaperSubMode, 1 }, "REAPER SubMode", 0, 32767, 0));
     layout.add (std::make_unique<AudioParameterBool>  (ParameterID { phaseLock, 1 }, "Phase Lock", true));
+    // élastique 直読み（REAPER外）のアルゴリズム。REAPER のモード番号とは別系統なので独立させる。
+    // 規約12: REAPER 上でも非REAPERでも常に存在させ、UIでグレーアウトするだけにする。
+    // 既定は Elastique Pro（多声OK）。Soloist は単声専用で、和音だと片方の声部が消え、
+    // 下方向シフトでレベルが pitch² 程度に落ちる（実測）。
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { elastiqueMode, 1 }, "elastique Mode",
+                    StringArray { "Elastique Pro", "Soloist" }, 0));
 
     // ビブラート。Depth=0 で無効。Delay は効き始めるまで、Fade は最大振幅に達するまでの時間。
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { vibDepth, 1 }, "Vib Depth",

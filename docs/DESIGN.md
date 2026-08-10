@@ -275,6 +275,24 @@ struct SampleBuffer {
 から一度だけ変換する**。`data` を再リサンプルすると二重変換になり音質が累積劣化する。
 埋め込み保存 (§3.9) も `original` を対象にする。
 
+**外部 ffmpeg によるデコード（同梱しない / ユーザー指定）**
+
+JUCE の `AudioFormatManager` が読めるのは wav/aiff/flac/mp3/ogg まで。ユーザーが
+設定画面で ffmpeg の実行ファイルを指定すると、mp4 / m4a / webm / mkv / mov / opus なども
+読めるようになる（`src/core/FfmpegDecoder.*`）。
+
+- **拡張子で振り分けない。** まず `loadFromMemory` を試し、**失敗したときだけ** ffmpeg へ回す。
+  こうすれば対応拡張子の一覧を持たずに済み（増えるたびに更新漏れが起きる）、
+  ffmpeg 未設定なら従来と完全に同じ挙動のままになる。
+- 中間形式は `pcm_f32le` の wav。劣化とクリップを避けるため float のまま出す。
+  **サンプルレートとチャンネル数は ffmpeg 側で変換しない** — ホストSRへの変換は
+  `SampleLoader` の仕事で、ここで変えると二重変換になる（規約16）。
+- `-nostdin` は必須。端末の無いプラグインプロセスから起動すると stdin 待ちで固まることがある。
+- ffmpeg 本体はライセンス構成が配布ビルドによって変わる（GPL/LGPL、非フリーのコーデックを
+  有効にしたビルドもある）ため、**バイナリはリポジトリに含めず同梱もしない**。
+  パスは `<userAppData>/OtoMadSampler/ffmpeg.txt` に保存する（マシン固有の設定）。
+  保存時に `-version` で検証済みなので、起動時の復元では再検証しない（子プロセス起動は遅い）。
+
 ### 3.2 `SourceReader`
 
 trim / loop / reverse を吸収し、エンジン側は無限ストリームとして扱えるようにする。
@@ -658,6 +676,22 @@ bool Voice::isFinished() const noexcept
   バックエンドへ渡す（`SampleLoader::loadFromMemory`）。転送中はファイルサイズの5〜6倍の
   メモリを使うので上限（64MB）を設ける。`MemoryBlock::toBase64Encoding` は JUCE 独自形式で
   JS の `btoa()` と互換が無いため、**`juce::Base64` を使うこと**。
+- デコードは背景スレッド（`loadPool`）で走るので、`loadSample` の戻り値では成否を返せない。
+  失敗は `loadError` イベントで通知する。**`status` イベントに相乗りさせない** —
+  status は 10Hz で回るぶんスカラー比較で早期棄却しており、文字列だけ変わった場合を
+  取りこぼす。
+- **WebView2 はネイティブ子ウィンドウなのでキー入力を全部食う。** Space が DAW まで届かず
+  再生/停止できない上、直前に押したボタンにフォーカスが残っていると Space で再クリックされる。
+  JS 側の capture フェーズで keydown/keyup 両方を `preventDefault`（button の click は
+  **keyup** で合成されるので keydown だけでは足りない）し、ネイティブ側で
+  `PostMessage(GetAncestor(hwnd, GA_ROOT), WM_KEYDOWN/UP, VK_SPACE)` としてホスト窓へ投げ直す。
+  - **REAPER でもアクションIDを決め打ちしない**（`Main_OnCommand` を使わない）。Space の既定は
+    Play/stop (40044) であって Play/pause (40073) ではなく、ユーザーが Space を別アクションへ
+    割り当てている場合もある。キーを渡せばホスト側の割り当てがそのまま効く。
+  - VST3 には「ホストのトランスポートを操作する」標準手段が無い
+    （`AudioPlayHead::canControlTransport()` は JUCE の VST3 ラッパでは常に false。
+    実装があるのは iOS Inter-App Audio のみ）。どのみち非REAPERホストではこれしかないので、
+    経路は一本にしておく。
 
 ---
 
@@ -1052,6 +1086,75 @@ FIXED_LATENCY = 自前エンジンの最大レイテンシ と REAPER全サブ�
   そのため `FIXED_LATENCY` は最初から余裕を持たせる（8192 目安、64bit/96kHz環境も考慮）。
 - エンジン切替でもフォールバック発動でもタイミングがズレない。
 - テールのドレインはこの整列バッファ分も流し切る必要がある (§3.6)。
+
+### 5.x REAPER 外で élastique を使う（実験機能・既定オフ）
+
+REAPER Shifter は本来 REAPER ホスト上でしか動かない（§5 冒頭）。しかし REAPER 同梱の
+`elastique3.dll` を**実行時ロード**すれば、他ホストでもピッチキャッシュのオフライン
+レンダにだけ élastique を使える。`src/pitch/ElastiqueDirect.{h,cpp}` がこれを担う。
+
+公式 SDK が無いため、C export と vtable スロットを直接叩く（RE + probe で確定）:
+
+```
+CreateInstance_E3(blockSize, channels, sampleRate, mode) -> void*   // mode 3 = Soloist
+DestroyInstance_E3(void*)
+vtable[1] ProcessData(inst, const float* const* in, int n, const float* const* out) -> int
+vtable[5] SetStretchQFactor(inst, float* pfStretch /*in-out*/, float pitch) -> int
+vtable[9] Reset(inst)
+```
+
+**確定した挙動（probe 実測）**
+
+| 事実 | 影響 |
+|---|---|
+| `Reset()` は pitch factor を 1.0 に戻す | **必ず `Reset()` → `SetStretchQFactor()` の順**。逆順だと素通し音がキャッシュに焼き付く |
+| `ProcessData` は起動プライミング中 `rc=-1`、有効出力で `rc=0` | 5 ブロック（約 5120 サンプル）は捨てる。頭出しは既存のオンセット検出でそのまま吸収 |
+| 入力 n サンプル → 出力 n サンプルの 1:1 | **タイムストレッチを表現できない**。`timeRatio != 1.0` は空を返す |
+| スレッド安全性は不明（保証なし） | `renderOffline` を `renderLock` で直列化。`load`/`unload` も同じロックで排他 |
+
+**モードの実測結果**（220Hz 正弦・和音を通し、自己相関と Goertzel で測定）
+
+`CreateInstance_E3` の第4引数。DLL の RTTI には Pro / Eff / Eff-mobile / SOLO の4系統が
+あるが、SDK が無いのでどの番号がどれかは断定できない。**挙動で判定して命名した。**
+
+| mode | 生成 | 挙動 | 採否 |
+|---|---|---|---|
+| 0, 1 | 成功 | 3 オクターブ下がる（＝この 1:1 契約では扱えない。`GetFramesNeeded` 系の可変入力が要ると思われる） | 使わない |
+| **2** | 成功 | **多声OK**。-39〜+48 半音で音程・レベルとも正確（レベル低下なし） | `Pro` |
+| **3** | 成功 | **単声専用**（SOLOIST）。和音だと片方の声部が消える。下方向でレベルが pitch² 程度に落ちる | `Soloist` |
+| 4 | 成功 | 音程が壊れる | 使わない |
+| 5, 6 | 成功 | mode 2 と同一出力（範囲外はクランプされている模様） | 使わない |
+
+和音 220+330Hz を +7 半音した実測（入力各成分 0.350）:
+mode 3 は上声部 494.4Hz が **0.005**（消滅）・330Hz が素通しで残る。mode 2 は 494.4Hz が **0.351**。
+
+**使用可能な半音範囲**（`ElastiqueDirect::usableSemitoneRange`）
+
+- `Pro`（UI表記 "Elastique Pro"）: **-39 〜 +48**。-40 以下は無音になる。
+  なお **mode 2 が本当に CElastiqueProV3 かは未確認**。多声で正しく動くことを実測した上での
+  表記であって、内部クラスの同定はできていない（SDK が無いため）。
+- `Soloist`: **-17 〜 +41**。上は +42 から音程が 25 セント以上ずれ始める。
+  下は音程自体は正しいがレベルが落ちるため、**makeup gain の上限 8 倍で救える -17 が実用限界**
+  （-24 半音で入力の約 4%、-30 以下でほぼ無音）。
+- 範囲外は空を返し、キャッシュを作らず Varispeed 再生になる（規約15）。
+
+> 初版は参考 Rust 実装の `pitch.clamp(0.25, 4.0)` をそのまま持ってきて ±24 に固定し、
+> モードも Soloist 決め打ちだった。どちらも**実測に基づかない値**だったので上記に置き換えた。
+> 特に Soloist を既定にしていたのは誤り — 単声専用なので、音楽や複数話者の素材では
+> 声部が消えていた。既定は `Pro`。
+
+**設計上の位置づけ**
+
+- **既定オフ。** ユーザーが設定画面で DLL パスを指定したときだけ有効。DLL は zplane の
+  ライセンス品なので**リポジトリに含めず再配布もしない**。UI に実験的・再配布不可と明記する。
+- **オフライン（キャッシュ）経路専用**（Duration = Natural / Manual）。リアルタイム経路では
+  使わない。プライミング・FIFO・レイテンシ補償が必要になり別物の複雑さになる。
+- モードは Soloist 固定、フォルマントは非対応。REAPER のモード/サブモード番号とは体系が違う。
+- 使えない条件（DLL 無し・ストレッチ・±2oct 超）では `renderShift` が `nullptr` を返し、
+  キャッシュが埋まらないまま Varispeed 再生になる。**規約15どおり無音にはならない。**
+- DLL パスは「このPCに REAPER がどこに入っているか」というマシン固有の事実なので、
+  プロジェクト state (`elastiqueDll` 属性) に加え
+  `<userAppData>/OtoMadSampler/elastique.txt` にも保存し、新規インスタンスで復元する。
 
 ---
 

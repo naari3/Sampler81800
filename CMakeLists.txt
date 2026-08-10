@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(OtoMadSampler VERSION 0.2.0 LANGUAGES C CXX)
+project(OtoMadSampler VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,7 +53,9 @@ target_sources(OtoMadSampler PRIVATE
     src/pitch/WsolaEngine.cpp
     src/pitch/PhaseVocoderEngine.cpp
     src/pitch/ReaperPitchShiftEngine.cpp
+    src/core/FfmpegDecoder.cpp
     src/pitch/PitchCache.cpp
+    src/pitch/ElastiqueDirect.cpp
     src/pitch/EngineResources.cpp
     src/pitch/dsp/Fft.cpp
     src/host/ReaperApi.cpp

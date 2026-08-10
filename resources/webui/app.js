@@ -87,6 +87,7 @@ import ("./juce-index.js").then ((juce) => {
   const vibCanvas = document.getElementById ("vib");
   const C = {};                              // コンボの state（グレーアウト判定で参照）
   let reaperAvailable = false;
+  let elastiqueLoaded = false;   // status イベントで更新（非REAPERでのシフター有効判定）
   const keyEls = new Map();                  // MIDIノート → 鍵盤要素
   let peaks = null, normGain = 1;            // 波形ピーク
   let view = { start: 0, end: 1 };           // 波形の表示窓（全体に対する割合）
@@ -116,6 +117,13 @@ import ("./juce-index.js").then ((juce) => {
   const nfGetSamples    = getNativeFunction ("getSamples");
   const nfSelectSample  = getNativeFunction ("selectSample");
   const nfRemoveSample  = getNativeFunction ("removeSample");
+  const nfGetElastique    = getNativeFunction ("getElastique");
+  const nfSetElastique    = getNativeFunction ("setElastique");
+  const nfBrowseElastique = getNativeFunction ("browseElastique");
+  const nfSpaceToHost     = getNativeFunction ("spaceToHost");
+  const nfGetFfmpeg       = getNativeFunction ("getFfmpeg");
+  const nfSetFfmpeg       = getNativeFunction ("setFfmpeg");
+  const nfBrowseFfmpeg    = getNativeFunction ("browseFfmpeg");
 
   //================================================================ knobs
   // SVG で描く（conic-gradient より線端・アンチエイリアスが綺麗）。
@@ -198,7 +206,7 @@ import ("./juce-index.js").then ((juce) => {
 
   //================================================================ combo / toggle
   for (const id of ["algorithm", "durationMode", "syncLength", "portaMode",
-                    "polyMode", "portaShape", "interpQuality"]) {
+                    "polyMode", "portaShape", "interpQuality", "elastiqueMode"]) {
     const sel = document.getElementById ("sel-" + id);
     if (! sel) continue;
     const state = C[id] = getComboBoxState (id);
@@ -274,6 +282,9 @@ import ("./juce-index.js").then ((juce) => {
 
     const rc = isReaper && reaperAvailable;
     dimEl (selRMode, rc); dimEl (selRSub, rc);
+    // elastique 直読みのモードは「REAPER Shifter 選択中 かつ REAPER 外 かつ DLL 済み」でだけ意味を持つ
+    dimEl (document.getElementById ("sel-elastiqueMode"),
+           isReaper && ! reaperAvailable && elastiqueLoaded);
 
     // REAPER Shifter は Sync 非対応 → Duration の "Sync" を選べなくする。選択中なら Natural へ。
     const selDur = document.getElementById ("sel-durationMode");
@@ -489,12 +500,15 @@ import ("./juce-index.js").then ((juce) => {
       const ok = await nfLoadSample (btoa (bin), file.name);
       if (! ok) { note ("転送失敗: " + file.name); return; }
 
-      // デコードは背景スレッドで進む。一定時間 sampleChanged が来なければ失敗とみなす。
+      // デコードは背景スレッドで進む。失敗は loadError イベントで飛んでくるが、
+      // 何も返ってこないまま黙って終わるケースの保険としてタイマも残す。
+      // 内蔵デコーダで読めない形式は ffmpeg のプロセス起動が挟まるぶん時間がかかる。
       pendingLoadName = file.name;
       clearTimeout (pendingLoadTimer);
+      const nativeExt = /\.(wav|aiff?|flac|mp3|ogg)$/i.test (file.name);
       pendingLoadTimer = setTimeout (() => {
         if (pendingLoadName) note ("デコードできませんでした（対応形式か確認してください）: " + pendingLoadName);
-      }, 5000);
+      }, nativeExt ? 5000 : 60000);
     }
     catch (e) { note ("読み込みエラー: " + (e && e.message ? e.message : e)); }
   }
@@ -832,6 +846,12 @@ import ("./juce-index.js").then ((juce) => {
     note ("");
     refreshWave(); refreshReaper(); refreshSampleList();
   });
+  // デコード失敗（背景スレッドなので loadSample の戻り値では返せない）。
+  // ffmpeg の stderr がそのまま入ってくるので、原因が UI で読める。
+  window.__JUCE__.backend.addEventListener ("loadError", (e) => {
+    pendingLoadName = null; clearTimeout (pendingLoadTimer);
+    note (e && e.message ? e.message : "読み込みに失敗しました");
+  });
   window.__JUCE__.backend.addEventListener ("status", (s) => {
     const bar = document.getElementById ("cache-bar");
     const fill = document.getElementById ("cache-fill");
@@ -841,7 +861,10 @@ import ("./juce-index.js").then ((juce) => {
       fill.style.width = Math.round (s.cacheProgress * 100) + "%";
       text.textContent = "キャッシュ生成中 " + Math.round (s.cacheProgress * 100) + "%";
     }
-    document.getElementById ("reaper-info").textContent = s.reaper || "REAPER 非対応ホスト";
+    // 空文字＝REAPER でもなく élastique も未設定。何をすれば使えるかまで出す。
+    document.getElementById ("reaper-info").textContent =
+      s.reaper || "REAPER 非対応ホスト — 設定（⚙）で elastique を指定すると使えます";
+    if (!! s.elastique !== elastiqueLoaded) { elastiqueLoaded = !! s.elastique; updateEnablement(); }
     const up = document.getElementById ("update-btn");
     up.hidden = ! s.updateAvail;
     if (s.updateAvail) up.textContent = "⬆ v" + s.latest;
@@ -928,9 +951,70 @@ import ("./juce-index.js").then ((juce) => {
     setTimeout (() => { b.textContent = "全インスタンスの既定にする"; }, 1200);
   });
 
+  // ---- ffmpeg（外部デコーダ）----
+  const ffState = document.getElementById ("ff-state");
+  const ffPath  = document.getElementById ("ff-path");
+  function showFfmpeg (s) {
+    if (!s) return;
+    ffState.textContent  = s.available ? "有効" : "未設定";
+    ffState.style.color  = s.available ? "var(--accent)" : "";
+    ffPath.textContent   = s.available ? s.path
+      : (s.found ? "自動検出できます: " + s.found : "ffmpeg が見つかりません（PATH を確認してください）");
+  }
+  document.getElementById ("ff-auto") .addEventListener ("click", async () => showFfmpeg (await nfSetFfmpeg ("")));
+  document.getElementById ("ff-clear").addEventListener ("click", async () => showFfmpeg (await nfSetFfmpeg ("-")));
+  document.getElementById ("ff-pick") .addEventListener ("click", async () => showFfmpeg (await nfBrowseFfmpeg()));
+  nfGetFfmpeg().then (showFfmpeg);
+
+  // ---- élastique 直叩き（実験機能）----
+  const elaState = document.getElementById ("ela-state");
+  const elaPath  = document.getElementById ("ela-path");
+  function showElastique (s) {
+    if (!s) return;
+    if (s.reaperHosted) {
+      elaState.textContent = "REAPER 上（不要）";
+      elaPath.textContent  = "REAPER 上では本来の API を使うので、この設定は無視されます。";
+      return;
+    }
+    elaState.textContent = s.loaded ? "有効" : "無効";
+    elaState.style.color = s.loaded ? "var(--accent)" : "";
+    elaPath.textContent  = s.loaded ? s.path
+      : (s.found && s.found.length ? "候補: " + s.found[0] : "elastique3.dll が見つかりません");
+  }
+  async function refreshElastique() { showElastique (await nfGetElastique()); }
+  document.getElementById ("ela-auto") .addEventListener ("click", async () => showElastique (await nfSetElastique ("")));
+  document.getElementById ("ela-clear").addEventListener ("click", async () => showElastique (await nfSetElastique ("-")));
+  document.getElementById ("ela-pick") .addEventListener ("click", async () => showElastique (await nfBrowseElastique()));
+  refreshElastique();
+
   // 他インスタンスからのブロードキャストや state 復元にも追従
   window.__JUCE__.backend.addEventListener ("appearanceChanged", refreshAppearance);
   refreshAppearance();
+
+  // ---- Space = ホストの再生/停止 ----
+  // WebView2 はネイティブ子ウィンドウなので、フォーカスがあると Space が DAW まで届かない。
+  // さらに直前に押したボタンにフォーカスが残っていると Space でそれが再クリックされてしまう。
+  // capture フェーズで握りつぶし、ネイティブ側でホスト窓へキーを投げ直す
+  // （アクションを決め打ちしないので、ホスト側の Space の割り当てがそのまま効く）。
+  function isTypingTarget (el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = el.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return true;
+    // range/color/file は Space を使わないのでトランスポート優先。text 系だけ除外する。
+    return tag === "INPUT" && !["range", "color", "file", "checkbox", "radio"].includes (el.type);
+  }
+  function onSpace (e) {
+    if (e.code !== "Space" && e.key !== " ") return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (isTypingTarget (e.target)) return;
+    // keydown/keyup の両方を止める（button の click は keyup で合成されるため）
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "keydown" && !e.repeat) nfSpaceToHost();
+  }
+  window.addEventListener ("keydown", onSpace, true);
+  window.addEventListener ("keyup",   onSpace, true);
 
   // ---- タブ ----
   const tabs  = Array.from (document.querySelectorAll (".tab"));

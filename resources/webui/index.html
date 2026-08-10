@@ -113,6 +113,11 @@
         <label class="field wide"><span>MODE</span><select id="sel-rmode"></select></label>
         <label class="field wide"><span>SUB MODE</span><select id="sel-rsub"></select></label>
       </div>
+      <!-- REAPER 外で elastique を直読みするときのアルゴリズム。REAPER 上では無効。 -->
+      <div class="row">
+        <label class="field wide"><span>elastique (非REAPER)</span>
+          <select id="sel-elastiqueMode"></select></label>
+      </div>
       <div class="reaper-info" id="reaper-info">—</div>
     </section>
   </div>
@@ -172,11 +177,48 @@
     <div class="swatches" id="set-swatches"></div>
     <p class="dlg-note">背景は差し替えられますが、ロゴは差し替えられません。<br>
       画像ファイルをウィンドウにドロップしても背景に設定できます。</p>
+
+    <div class="panel-head" style="margin-top:14px">
+      <span class="led"></span><span class="title">EXTERNAL DECODER — ffmpeg</span>
+    </div>
+    <div class="row">
+      <button class="btn" id="ff-auto">自動検出</button>
+      <button class="btn" id="ff-pick">ffmpeg を選択…</button>
+      <button class="btn" id="ff-clear">解除</button>
+      <span class="spacer"></span>
+      <span class="field"><span>STATUS</span><i id="ff-state">—</i></span>
+    </div>
+    <p class="dlg-note" id="ff-path">未設定</p>
+    <p class="dlg-note">ffmpeg を指定すると、標準では読めない形式（mp4 / m4a / webm / mkv /
+      mov / opus など）も読み込めるようになります。まず内蔵デコーダで試し、
+      失敗したときだけ ffmpeg に回すので、指定しなければ今までどおりの動作です。<br>
+      ffmpeg 本体は同梱していません。<code>winget install ffmpeg</code> などで入れて
+      PATH が通っていれば自動検出できます。</p>
+
+    <div class="panel-head" style="margin-top:14px">
+      <span class="led"></span><span class="title">EXPERIMENTAL — élastique OUTSIDE REAPER</span>
+    </div>
+    <div class="row">
+      <button class="btn" id="ela-auto">自動検出</button>
+      <button class="btn" id="ela-pick">DLL を選択…</button>
+      <button class="btn" id="ela-clear">解除</button>
+      <span class="spacer"></span>
+      <span class="field"><span>STATUS</span><i id="ela-state">—</i></span>
+    </div>
+    <p class="dlg-note" id="ela-path">未設定</p>
+    <p class="dlg-note">REAPER Shifter は本来 REAPER 上でしか動きませんが、REAPER に同梱の
+      <code>elastique3.dll</code> を直接読み込むことで他のホストでも Natural / Manual の
+      キャッシュ経路だけ使えるようにする<b>実験的な機能</b>です。<br>
+      DLL は zplane 社のライセンス品で<b>再配布できません</b>。REAPER をインストール済みの
+      環境で、自分の PC 上にあるものを指定してください。動作は無保証です。<br>
+      制限: モードは Soloist 固定、フォルマントと Manual ストレッチは効きません（±2 オクターブ超と
+      ストレッチ指定時はキャッシュを作らず Varispeed 再生になります）。</p>
   </div>
 </div>
 
 <div id="bg-layer"></div>
-<input type="file" id="file-input" accept=".wav,.aiff,.aif,.flac,.mp3,.ogg" hidden>
+<!-- ffmpeg 指定時は mp4 等も通るので、選択肢を絞りすぎないようにしておく -->
+<input type="file" id="file-input" accept="audio/*,video/*,.wav,.aiff,.aif,.flac,.mp3,.ogg,.m4a,.mp4,.webm,.mkv,.mov,.opus,.wma" hidden>
 <input type="file" id="bg-input" accept="image/*" hidden>
 <script type="module" src="app.js"></script>
 </body>

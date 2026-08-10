@@ -100,8 +100,43 @@ public:
     // 現在の外観を「全インスタンス共通の既定」としてユーザ設定に保存する（メッセージスレッド）。
     // 以後の新規インスタンスはこれを初期値として読み込む。
     void  saveAppearanceAsDefault();
-    bool isEngineFallbackActive() const noexcept { return voices.isFallbackActive(); }
+    // キャッシュ経路が生きているなら「代替エンジン」ではない。実際に鳴っているのは
+    // REAPER / élastique がオフラインでレンダした音を Varispeed で読んでいるだけで、
+    // Voice 側の fallbackActive（＝リアルタイム経路で PV に落ちたか）とは意味が違う。
+    bool isEngineFallbackActive() const noexcept
+    {
+        if (useCachePath() && (reaperApi.isAvailable() || elastique.isAvailable()))
+            return false;
+        return voices.isFallbackActive();
+    }
     bool isReaperAvailable() const noexcept { return reaperApi.isAvailable(); }
+
+    // SHIFTER 欄の説明。REAPER / élastique直読み / 非対応 を区別する。
+    juce::String getShifterStatusText() const;
+
+    // élastique DLL 直叩き（実験機能・再配布不可）。REAPER 外でも Shifter のキャッシュ経路を使う。
+    // 空パスを渡すと既定の候補（REAPER のインストール先）を順に試す。
+    bool         loadElastiqueDll (const juce::String& path);
+    void         unloadElastiqueDll();
+    bool         isElastiqueLoaded() const noexcept { return elastique.isAvailable(); }
+    juce::String getElastiquePath() const { return juce::String (elastique.getLoadedPath()); }
+    static juce::File elastiqueSettingsFile();
+
+    // 外部 ffmpeg（同梱しない）。JUCE が読めなかったファイルだけをこれに回す。
+    // 空パスを渡すと PATH と既定候補から自動探索する。成功したら true。
+    bool         setFfmpegPath (const juce::String& path);
+    void         clearFfmpegPath();
+    bool         isFfmpegAvailable() const;
+    juce::String getFfmpegPath() const;
+    static juce::File ffmpegSettingsFile();
+
+    // 直近の読み込み失敗メッセージ（UI 表示用。空なら失敗していない）
+    juce::String getLastLoadError() const;
+
+    // Space をホスト窓へ投げ直して DAW に再生/停止させる（メッセージスレッド）。
+    // WebView が Space を食ってしまうので、UI 側で preventDefault してここへ回す。
+    // アクションIDを決め打ちせずキーを渡すので、ユーザーのキーマップがそのまま効く。
+    bool forwardSpaceKeyToHost (void* editorNativeHandle);
 
     // GUI表示用: 現在の REAPER モード名/サブモード名/レイテンシ/個数
     juce::String getReaperModeText() const
@@ -196,6 +231,13 @@ private:
 
     otomad::VoiceManager voices;
     otomad::host::ReaperApi reaperApi;
+    otomad::ElastiqueDirect elastique;      // REAPER 外での代替バックエンド（実験）
+    juce::String            elastiquePath;  // ユーザー指定のDLLパス（state に保存）
+
+    // ffmpeg のパスと直近のエラー。背景(loadPool)とメッセージスレッドの両方から触るのでロックする。
+    mutable juce::CriticalSection ffmpegLock;
+    juce::File                    ffmpegExe;
+    juce::String                  lastLoadError;
     otomad::PitchCache      pitchCache;
     std::atomic<int>        cacheJobsActive { 0 };   // 稼働中の背景レンダジョブ数
 
@@ -292,6 +334,7 @@ private:
     std::atomic<float>* pPhaseLock   = nullptr;
     std::atomic<float>* pReaperMode    = nullptr;
     std::atomic<float>* pReaperSubMode = nullptr;
+    std::atomic<float>* pElastiqueMode = nullptr;
     std::atomic<float>* pVibDepth      = nullptr;
     std::atomic<float>* pVibRate       = nullptr;
     std::atomic<float>* pVibDelay      = nullptr;

@@ -53,6 +53,13 @@ private:
     void nfGetSamples   (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfSelectSample (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfRemoveSample (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfGetElastique (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfSetElastique (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfBrowseElastique (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfSpaceToHost   (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfGetFfmpeg     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfSetFfmpeg     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfBrowseFfmpeg  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
 
     // スライダ/コンボ/トグルのリレー＋アタッチメント
     template <typename RelayT, typename AttachT>
@@ -70,6 +77,8 @@ private:
     std::vector<std::unique_ptr<ComboBound>>  combos;
     std::vector<std::unique_ptr<ToggleBound>> toggles;
     std::unique_ptr<juce::WebBrowserComponent> web;
+    std::unique_ptr<juce::FileChooser>         dllChooser;   // élastique DLL 選択（非同期なので保持）
+    std::unique_ptr<juce::FileChooser>         exeChooser;   // ffmpeg 実行ファイル選択
 
     int lastSampleVersion = -1;   // 波形の再送判定
     int lastAppearanceVersion = -1;   // 外観（色/背景）の再送判定
@@ -78,6 +87,8 @@ private:
     bool lastBusy = false, lastFallback = false, lastUpdateAvail = false;
     int  lastProgPct = -1, lastReaperKey = -1;
     juce::String lastStatusJson;  // 同じ内容の連投を避ける
+    juce::String lastLoadErrorSeen;   // 読み込み失敗メッセージの再送判定
+    juce::String lastShifterText;     // SHIFTER 欄の文言の再送判定
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoMadSamplerWebEditor)
 };

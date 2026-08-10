@@ -3,6 +3,7 @@
 #if OTOMAD_WEB_UI
  #include "WebEditor.h"
 #endif
+#include "core/FfmpegDecoder.h"
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -10,6 +11,13 @@
 #include <cmath>
 #include <mutex>
 #include <vector>
+
+#if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX      // windows.h の min/max マクロが std::min/max を壊すのを防ぐ
+ #endif
+ #include <windows.h>
+#endif
 
 using otomad::SampleBuffer;
 
@@ -34,6 +42,7 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
 {
     formatManager.registerBasicFormats();
     pitchCache.setApi (&reaperApi);
+    pitchCache.setElastique (&elastique);
 
     pPitchSemi   = apvts.getRawParameterValue (otomad::params::pitchSemi);
     pOctave      = apvts.getRawParameterValue (otomad::params::octave);
@@ -64,12 +73,24 @@ OtoMadSamplerProcessor::OtoMadSamplerProcessor()
     pPhaseLock   = apvts.getRawParameterValue (otomad::params::phaseLock);
     pReaperMode    = apvts.getRawParameterValue (otomad::params::reaperMode);
     pReaperSubMode = apvts.getRawParameterValue (otomad::params::reaperSubMode);
+    pElastiqueMode = apvts.getRawParameterValue (otomad::params::elastiqueMode);
     pVibDepth    = apvts.getRawParameterValue (otomad::params::vibDepth);
     pVibRate     = apvts.getRawParameterValue (otomad::params::vibRate);
     pVibDelay    = apvts.getRawParameterValue (otomad::params::vibDelay);
     pVibFade     = apvts.getRawParameterValue (otomad::params::vibFade);
 
     loadDefaultAppearance();   // 全インスタンス共通の外観既定（あれば）。state復元があれば後で上書きされる。
+
+    // élastique 直叩き（実験機能）: 以前に設定したパスがあれば復元する
+    if (const auto f = elastiqueSettingsFile(); f.existsAsFile())
+        if (const auto p = f.loadFileAsString().trim(); p.isNotEmpty())
+            loadElastiqueDll (p);
+
+    // ffmpeg: 保存済みパスを復元する。verify() は子プロセスを起こして遅いので
+    // ここではやらない（保存時に検証済み。消えていれば existsAsFile で弾かれる）。
+    if (const auto f = ffmpegSettingsFile(); f.existsAsFile())
+        if (const auto p = f.loadFileAsString().trim(); p.isNotEmpty())
+            ffmpegExe = juce::File (p);
 
     // ブロードキャスト用レジストリに登録
     {
@@ -359,6 +380,71 @@ void OtoMadSamplerProcessor::addSampleImpl (std::shared_ptr<const otomad::Sample
     sampleVersion.fetch_add (1);
 }
 
+// DLL の場所は「このPCに REAPER がどこに入っているか」というマシン固有の事実なので、
+// プロジェクト state だけでなくユーザー設定として保存し、新規インスタンスでも復元する。
+juce::File OtoMadSamplerProcessor::elastiqueSettingsFile()
+{
+    return defaultAppearanceFile().getSiblingFile ("elastique.txt");
+}
+
+bool OtoMadSamplerProcessor::loadElastiqueDll (const juce::String& path)
+{
+    const bool ok = elastique.load (path.toStdString());
+    elastiquePath = ok ? juce::String (elastique.getLoadedPath()) : path;
+
+    if (ok)
+    {
+        const auto f = elastiqueSettingsFile();
+        f.getParentDirectory().createDirectory();
+        f.replaceWithText (elastiquePath);
+        sampleVersion.fetch_add (1);   // バックエンドが変わったのでキャッシュを作り直させる
+    }
+    return ok;
+}
+
+void OtoMadSamplerProcessor::unloadElastiqueDll()
+{
+    elastique.unload();
+    elastiquePath.clear();
+    elastiqueSettingsFile().deleteFile();
+    sampleVersion.fetch_add (1);
+}
+
+//==============================================================================
+// Space をホストのウィンドウへ投げ直す。
+//
+// WebView2 はネイティブの子ウィンドウなので、フォーカスがあると Space を全部食ってしまい
+// DAW まで届かない（さらにフォーカスの残ったボタンが押されてしまう）。そこで JS 側で
+// preventDefault し、ここでホスト窓へ WM_KEYDOWN/WM_KEYUP を送り直す。
+//
+// REAPER でも Main_OnCommand を直接叩かず、同じくキーを投げ直す。理由:
+//   - Space の既定アクションは REAPER でも Play/stop (40044) であって Play/pause (40073)
+//     ではない。アクションIDを決め打ちすると DAW 本来の挙動とズレる。
+//   - ユーザーが Space を別アクションに割り当てていても、キーを渡せばそれがそのまま効く。
+// VST3 には「ホストのトランスポートを操作する」標準的な手段が無い
+// （JUCE の AudioPlayHead::canControlTransport も VST3 ラッパでは常に false）ので、
+// どのみち非REAPERホストではこの方法しかない。経路を一本にしておく。
+bool OtoMadSamplerProcessor::forwardSpaceKeyToHost (void* editorNativeHandle)
+{
+#if JUCE_WINDOWS
+    if (auto hwnd = (HWND) editorNativeHandle)
+    {
+        // エディタ窓の祖先をたどってホスト側のトップレベル窓を探す。
+        // DAW によっては中間のフローティングFX窓で止まるが、その窓がキーを
+        // ホストのメッセージループへ流してくれるので実害はない。
+        HWND target = GetAncestor (hwnd, GA_ROOT);
+        if (target == nullptr) target = hwnd;
+
+        PostMessage (target, WM_KEYDOWN, VK_SPACE, 0);
+        PostMessage (target, WM_KEYUP,   VK_SPACE, 0xC0000000);
+        return true;
+    }
+#else
+    juce::ignoreUnused (editorNativeHandle);
+#endif
+    return false;
+}
+
 juce::String OtoMadSamplerProcessor::getSampleName (int index) const
 {
     const juce::ScopedLock sl (slotLock);
@@ -422,10 +508,124 @@ void OtoMadSamplerProcessor::loadSampleFromMemory (juce::MemoryBlock bytes, juce
     const double sr = hostSampleRate.load();
     loadPool.addJob ([this, bytes = std::move (bytes), displayName, sr]
     {
+        { const juce::ScopedLock sl (ffmpegLock); lastLoadError.clear(); }
+
+        // まず JUCE のデコーダで試す。読めればここで終わり（従来どおり）。
         if (auto sb = otomad::SampleLoader::loadFromMemory (bytes.getData(), bytes.getSize(),
                                                             displayName, sr, formatManager))
-            publishSample (sb);
+        { publishSample (sb); return; }
+
+        // 読めなかったものだけ ffmpeg へ回す。拡張子で振り分けないので、
+        // ffmpeg が読める形式（mp4 / m4a / webm / mkv / mov / opus …）は自動的に通る。
+        juce::File exe;
+        { const juce::ScopedLock sl (ffmpegLock); exe = ffmpegExe; }
+
+        if (! exe.existsAsFile())
+        {
+            const juce::ScopedLock sl (ffmpegLock);
+            lastLoadError = "デコードできませんでした: " + displayName
+                          + "（設定画面で ffmpeg を指定すると mp4 等も読めます）";
+            return;
+        }
+
+        juce::String err;
+        const auto wav = otomad::FfmpegDecoder::decodeToWav (exe, bytes.getData(), bytes.getSize(),
+                                                             displayName, err);
+        if (! wav.existsAsFile())
+        {
+            const juce::ScopedLock sl (ffmpegLock);
+            lastLoadError = "ffmpeg: " + err.upToFirstOccurrenceOf ("\n", false, false);
+            return;
+        }
+
+        auto sb = otomad::SampleLoader::loadFile (wav, sr, formatManager);
+        wav.deleteFile();
+
+        if (sb == nullptr)
+        {
+            const juce::ScopedLock sl (ffmpegLock);
+            lastLoadError = "ffmpeg の出力を読めませんでした: " + displayName;
+            return;
+        }
+        // ffmpeg 経由でも UI にはドロップしたファイル名を出す（中間wavの名前ではなく）
+        sb->name = displayName.toStdString();
+        publishSample (sb);
     });
+}
+
+//==============================================================================
+// SHIFTER 欄に出す説明。REAPER 上か、élastique 直読みか、どちらも無いかを区別する。
+// 「REAPER 非対応ホスト」としか出ないと、élastique を設定しても効いていないように見える。
+juce::String OtoMadSamplerProcessor::getShifterStatusText() const
+{
+    if (reaperApi.isAvailable())
+        return getReaperModeText();
+
+    if (! elastique.isAvailable())
+        return {};   // JS 側が「設定で élastique を指定すると使えます」を出す
+
+    // 直読み経路が実際に効く条件かどうかまで出す。効かないときに理由が分からないのが一番困る。
+    if (! useCachePath())
+        return "elastique 直読み（実験）: Duration を Natural / Manual にすると有効";
+
+    if ((int) pDurationMode->load() == 2)
+    {
+        const float st = pStretch->load();
+        if (std::abs ((double) st - 1.0) > 1.0e-3)
+            return "elastique 直読み（実験）: ストレッチ中は非対応 → Varispeed 再生";
+    }
+
+    const bool solo = (int) pElastiqueMode->load() == 1;
+    int lo = 0, hi = 0;
+    otomad::ElastiqueDirect::usableSemitoneRange (solo ? otomad::ElastiqueDirect::Soloist
+                                                       : otomad::ElastiqueDirect::Pro, lo, hi);
+    return juce::String ("elastique 直読み（実験） / ")
+         + (solo ? "Soloist（単声専用）" : "Elastique Pro")
+         + "  " + juce::String (lo) + "〜+" + juce::String (hi) + " 半音";
+}
+
+juce::File OtoMadSamplerProcessor::ffmpegSettingsFile()
+{
+    return defaultAppearanceFile().getSiblingFile ("ffmpeg.txt");
+}
+
+bool OtoMadSamplerProcessor::setFfmpegPath (const juce::String& path)
+{
+    // 空なら自動探索。指定があってもそのまま信じず -version で実際に動くか確かめる。
+    const auto f = path.isEmpty() ? otomad::FfmpegDecoder::find() : juce::File (path);
+    if (! otomad::FfmpegDecoder::verify (f))
+        return false;
+
+    { const juce::ScopedLock sl (ffmpegLock); ffmpegExe = f; }
+
+    const auto s = ffmpegSettingsFile();
+    s.getParentDirectory().createDirectory();
+    s.replaceWithText (f.getFullPathName());
+    return true;
+}
+
+void OtoMadSamplerProcessor::clearFfmpegPath()
+{
+    { const juce::ScopedLock sl (ffmpegLock); ffmpegExe = juce::File(); }
+    ffmpegSettingsFile().deleteFile();
+}
+
+bool OtoMadSamplerProcessor::isFfmpegAvailable() const
+{
+    const juce::ScopedLock sl (ffmpegLock);
+    return ffmpegExe.existsAsFile();
+}
+
+juce::String OtoMadSamplerProcessor::getFfmpegPath() const
+{
+    const juce::ScopedLock sl (ffmpegLock);
+    return ffmpegExe.getFullPathName();
+}
+
+juce::String OtoMadSamplerProcessor::getLastLoadError() const
+{
+    const juce::ScopedLock sl (ffmpegLock);
+    return lastLoadError;
 }
 
 void OtoMadSamplerProcessor::loadSampleFromFile (const juce::File& file)
@@ -517,7 +717,8 @@ void OtoMadSamplerProcessor::serviceCache()
     const bool changed = pitchCache.configure (activeSample.load(), sampleVersion.load(),
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
                           hostSampleRate.load(), pFormant->load(), timeRatio,
-                          pSampleStart->load(), pSampleEnd->load());
+                          pSampleStart->load(), pSampleEnd->load(),
+                          (int) pElastiqueMode->load());
 
     // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±48 半音（全域）をまとめて背景生成（停止中に貯める）
     if (changed && useCachePath())
@@ -835,6 +1036,8 @@ void OtoMadSamplerProcessor::getStateInformation (juce::MemoryBlock& destData)
     root->setAttribute ("uiScalePct", (double) uiScalePct.load());   // UI 表示倍率
     root->setAttribute ("editorW", editorW.load());                  // エディタサイズ
     root->setAttribute ("editorH", editorH.load());
+    if (elastiquePath.isNotEmpty())
+        root->setAttribute ("elastiqueDll", elastiquePath);          // 実験機能のDLLパス
 
     if (auto apvtsXml = apvts.copyState().createXml())
         root->addChildElement (apvtsXml.release());
@@ -936,6 +1139,8 @@ void OtoMadSamplerProcessor::setStateInformation (const void* data, int sizeInBy
         uiScalePct.store ((float) xml->getDoubleAttribute ("uiScalePct", 100.0));
     editorW.store (xml->getIntAttribute ("editorW", 0));
     editorH.store (xml->getIntAttribute ("editorH", 0));
+    if (const auto p = xml->getStringAttribute ("elastiqueDll"); p.isNotEmpty())
+        loadElastiqueDll (p);   // 失敗しても従来経路にフォールバックするだけ
 
     juce::XmlElement* apvtsXml  = nullptr;
     juce::XmlElement* sampleXml = nullptr;

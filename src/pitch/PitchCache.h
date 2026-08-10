@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/SampleBuffer.h"
+#include "ElastiqueDirect.h"
 
 namespace otomad
 {
@@ -35,6 +36,8 @@ public:
     static constexpr int kMin = -48, kMax = 48, kN = kMax - kMin + 1;
 
     void setApi (host::ReaperApi* a) noexcept { api = a; }
+    // REAPER 外での代替バックエンド（実験機能）。null なら従来どおり REAPER 上でのみ動く。
+    void setElastique (const ElastiqueDirect* e) noexcept { elastique = e; }
 
     // --- 音声スレッド ---
     const SampleBuffer* lookup (int semi) const noexcept
@@ -61,9 +64,11 @@ public:
     // （古いバッファは再生中の可能性があるので解放しない=graveyard保持）
     // 設定が変わっていたら true（プリウォームの再要求に使う）。
     // start01/end01: トリム範囲（正規化 0..1）。この範囲だけをレンダするので、トリム変更でも作り直す。
+    // elaMode: élastique 直読み時のアルゴリズム（0=Polyphonic, 1=Soloist）。
+    // REAPER 経路では未使用だが、切り替えでキャッシュを作り直させるため変更検知に含める。
     bool configure (const SampleBuffer* src, int version, int mode, int sub,
                     double sampleRate, float formant, double timeRatio,
-                    float start01, float end01);
+                    float start01, float end01, int elaMode);
     bool hasPending() const noexcept
     { return reqLo.load() != 0 || reqHi.load() != 0; }
 
@@ -86,7 +91,8 @@ public:
 private:
     std::shared_ptr<SampleBuffer> renderShift (int semi, int& usedGen);
 
-    host::ReaperApi* api = nullptr;
+    host::ReaperApi*       api       = nullptr;
+    const ElastiqueDirect* elastique = nullptr;
 
     std::array<std::atomic<const SampleBuffer*>, (std::size_t) kN> ready {};
     std::atomic<std::uint64_t> reqLo { 0 }, reqHi { 0 };
@@ -98,6 +104,7 @@ private:
     float  curFormant = 0.0f;      // 量子化済み（0.25半音刻み）
     double curTimeRatio = 1.0;     // 量子化済み（0.01刻み）
     float  curStart = 0.0f, curEnd = 1.0f;   // トリム範囲（量子化済み 0.001刻み）
+    int    curElaMode = 0;                   // élastique 直読みのアルゴリズム
     int    curGen = 0;             // 設定が1つでも変わるたびに +1（レンダリング有効性の判定用）
     std::vector<std::shared_ptr<const SampleBuffer>> graveyard;   // 再生中バッファの寿命保持
 };
