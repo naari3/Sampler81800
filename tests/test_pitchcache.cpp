@@ -16,17 +16,21 @@ using namespace otomad;
 // （REAPER Shifter → WSOLA → REAPER Shifter と往復すると毎回この束が再投入される）
 // ============================================================================
 
-TEST_CASE ("elastique usable range is +-24 semitones for both modes", "[cache]")
+TEST_CASE ("elastique usable range matches the measured values", "[cache]")
 {
-    // 実測値。ここを広げると「空のレンダリング」を延々と要求することになるので、
-    // 広げるなら必ず実機で測り直すこと（probe: 220Hz 倍音入りを -48..+48 でレンダ）。
-    for (auto mode : { ElastiqueDirect::Pro, ElastiqueDirect::Soloist })
-    {
-        int lo = 0, hi = 0;
-        ElastiqueDirect::usableSemitoneRange (mode, lo, hi);
-        REQUIRE (lo == -24);
-        REQUIRE (hi ==  24);
-    }
+    // 実測値（関門を -96..+96 に開けて DLL の素の挙動を測ったもの）。
+    // ここを動かすと、作れない音程を延々と要求するか、作れる音程を捨てるかのどちらかになる。
+    // **変えるなら必ず実機で測り直すこと。** 一度 ±24 に狭めて改悪した（原因は
+    // プローブが古い ElastiqueDirect.obj を掴んでいて、DLL ではなく自分の関門を測っていた）。
+    int lo = 0, hi = 0;
+
+    ElastiqueDirect::usableSemitoneRange (ElastiqueDirect::Pro, lo, hi);
+    REQUIRE (lo == -39);    // -40 以下は音程が +400〜500 cent ずれる
+    REQUIRE (hi ==  48);
+
+    ElastiqueDirect::usableSemitoneRange (ElastiqueDirect::Soloist, lo, hi);
+    REQUIRE (lo == -17);
+    REQUIRE (hi ==  41);
 }
 
 TEST_CASE ("cache requests nothing when no backend can render", "[cache]")

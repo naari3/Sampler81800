@@ -166,6 +166,10 @@ public:
     // キャッシュ経路でないときは常に完了(1.0)/非ビジー扱い。
     bool  isCacheBusy() const noexcept
     { return useCachePath() && pitchCache.pendingCount() > 0; }
+    // 進捗のパーセントだけだと「0% で止まっている」ように見えたとき、生成済みが 0 なのか
+    // 分母が異常なのかを切り分けられない。実数で出して不具合報告をそのまま使えるようにする。
+    int   getCacheReadyCount()   const noexcept { return pitchCache.readyCount(); }
+    int   getCachePendingCount() const noexcept { return pitchCache.pendingCount(); }
     float getCacheProgress() const noexcept
     {
         if (! useCachePath()) return 1.0f;

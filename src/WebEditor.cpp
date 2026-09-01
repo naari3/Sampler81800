@@ -703,6 +703,8 @@ void OtoMadSamplerWebEditor::timerCallback()
     auto* s = new juce::DynamicObject();
     s->setProperty ("cacheBusy",     processor.isCacheBusy());
     s->setProperty ("cacheProgress", processor.getCacheProgress());
+    s->setProperty ("cacheReady",    processor.getCacheReadyCount());
+    s->setProperty ("cachePending",  processor.getCachePendingCount());
     s->setProperty ("reaper",        processor.getShifterStatusText());
     s->setProperty ("elastique",     processor.isElastiqueLoaded());
     s->setProperty ("fallback",      processor.isEngineFallbackActive());

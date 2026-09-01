@@ -114,6 +114,13 @@ public:
 private:
     std::shared_ptr<SampleBuffer> renderShift (int semi, int& usedGen);
 
+    // REAPER のシフタに生成可能範囲を問い合わせる（メッセージスレッド）。
+    // REAPER 経路が使えたら true（範囲が取れなくても全域を入れて true）。
+    bool queryReaperRange (int mode, int sub, double sampleRate, int& lo, int& hi) const;
+
+    // 範囲を問い合わせ済みのモード（毎tick シフタを作らないため）
+    int probedMode = -999, probedSub = -999, probedElaMode = -999;
+
     host::ReaperApi*       api       = nullptr;
     const ElastiqueDirect* elastique = nullptr;
 

@@ -22,6 +22,48 @@ namespace otomad
 
 using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 
+// REAPER のシフタに「生成できる範囲」を直接聞く。
+//
+// SDK には REAPER_PITCHSHIFT_EXT_GETMINMAXPRODUCTS があり、シフタが扱える
+// **shift × tempo の積**の下限/上限を返す（未対応の実装は 0 を返して parm に触らない）。
+// 制限が shift 単体ではなく積に乗っているのは、この手のエンジンが内部で
+// 「リサンプル＋伸縮」に分解して動くため。うちのキャッシュは常に tempo=1 で回すので、
+// 積の範囲がそのまま shift の範囲になる。
+//
+// 決め打ちしないのが肝。élastique 直読みで使用可能範囲を推測して間違えた
+// （Pro -39..+48 と申告していたが実際は ±24）ので、聞けるものは聞く。
+// 取れなければ REAPER 経路は全域とみなす（従来動作）。
+bool PitchCache::queryReaperRange (int mode, int sub, double sampleRate, int& lo, int& hi) const
+{
+    if (api == nullptr)
+        return false;
+    auto getPS = reinterpret_cast<ReaperGetPitchShiftAPI_t> (api->getFunction ("ReaperGetPitchShiftAPI"));
+    if (getPS == nullptr)
+        return false;
+    IReaperPitchShift* ps = getPS (REAPER_PITCHSHIFT_API_VER);
+    if (ps == nullptr)
+        return false;
+
+    lo = kMin; hi = kMax;   // 問い合わせに失敗しても REAPER 経路は全域扱い（従来動作）
+
+    ps->set_srate (sampleRate > 0.0 ? sampleRate : 48000.0);
+    ps->set_nch (1);
+    ps->set_tempo (1.0);
+    ps->SetQualityParameter ((mode << 16) + sub);
+
+    double minProduct = 0.0, maxProduct = 0.0;
+    if (ps->Extended (REAPER_PITCHSHIFT_EXT_GETMINMAXPRODUCTS, &minProduct, &maxProduct, nullptr) != 0
+        && minProduct > 0.0 && minProduct < 1.0 && maxProduct > 1.0 && maxProduct < 1024.0)
+    {
+        // 積の範囲 → 半音。境界を跨がないよう内側に丸める。
+        lo = (int) std::ceil  (12.0 * std::log2 (minProduct) - 1.0e-6);
+        hi = (int) std::floor (12.0 * std::log2 (maxProduct) + 1.0e-6);
+    }
+
+    delete ps;
+    return true;
+}
+
 bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int sub,
                             double sampleRate, float formant, double timeRatio,
                             float start01, float end01, int elaMode)
@@ -34,25 +76,21 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
 
     // 生成できる半音範囲を先に更新する（設定が変わっていなくても、élastique の
     // 読み込みが後から成功することがあるので毎回見直す）。
+    // モード/サブモードが変わったときだけ REAPER に問い合わせる（インスタンス生成を伴うため）。
+    if (mode != probedMode || sub != probedSub || elaMode != probedElaMode)
     {
-        // REAPER のピッチシフト API が取れるならモード依存の制限は無い（全域）。
-        // 取れないときは élastique 直読みの制限（±24半音）に従う。どちらも無ければ
-        // キャッシュは作れないので何も要求しない。
-        bool reaperOk = false;
-        if (api != nullptr)
-            reaperOk = api->getFunction ("ReaperGetPitchShiftAPI") != nullptr;
+        probedMode = mode; probedSub = sub; probedElaMode = elaMode;
 
-        int lo = kMin, hi = kMax;
-        if (! reaperOk)
+        int lo = 1, hi = 0;   // 既定は空範囲＝一切要求しない
+        if (! queryReaperRange (mode, sub, sampleRate, lo, hi))
         {
+            // REAPER が使えない → élastique 直読みの制限に従う。どちらも無ければ空のまま。
             if (elastique != nullptr && elastique->isAvailable())
                 ElastiqueDirect::usableSemitoneRange (elaMode == 1 ? ElastiqueDirect::Soloist
                                                                    : ElastiqueDirect::Pro, lo, hi);
-            else
-            { lo = 1; hi = 0; }   // 空範囲＝一切要求しない
         }
-        reqLo.store (lo, std::memory_order_relaxed);
-        reqHi.store (hi, std::memory_order_relaxed);
+        reqLo.store (std::max (lo, kMin), std::memory_order_relaxed);
+        reqHi.store (std::min (hi, kMax), std::memory_order_relaxed);
     }
 
     std::lock_guard<std::mutex> lock (ownerLock);

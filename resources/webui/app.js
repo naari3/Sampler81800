@@ -970,7 +970,9 @@ import ("./juce-index.js").then ((juce) => {
     bar.hidden = ! s.cacheBusy;
     if (s.cacheBusy) {
       fill.style.width = Math.round (s.cacheProgress * 100) + "%";
-      text.textContent = "キャッシュ生成中 " + Math.round (s.cacheProgress * 100) + "%";
+      const done = s.cacheReady | 0, left = s.cachePending | 0;
+      text.textContent = "キャッシュ生成中 " + Math.round (s.cacheProgress * 100) + "%"
+                       + "  (" + done + "/" + (done + left) + ")";
     }
     // 空文字＝REAPER でもなく élastique も未設定。何をすれば使えるかまで出す。
     document.getElementById ("reaper-info").textContent =
