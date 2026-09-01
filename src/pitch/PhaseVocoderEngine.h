@@ -40,6 +40,7 @@ private:
     float intAt (int ch, long idx) const noexcept;
 
     const float* hann = nullptr;
+    double sampleRate = 48000.0;   // フォルマント平滑幅を Hz で決めるのに要る
     int  N = 2048, hop = 512, nbins = 1025;
     int  prepCh = 2;
     long cap = 8192;
@@ -57,6 +58,7 @@ private:
 
     std::vector<std::complex<float>> spec;   // [N] スクラッチ（1chずつ）
     std::vector<float>               mag, phi, magShift, outPhase;    // [nbins]
+    std::vector<float>               gain;    // [nbins] フォルマント用のゲイン曲線（平滑前）
     std::vector<int>                 peaks;   // ピーク bin リスト
 };
 

@@ -272,7 +272,12 @@ import ("./juce-index.js").then ((juce) => {
     const isReaper = (algo === 5);
     const isPV     = (algo === 2);
 
-    dimKnob ("formant",    isReaper);          // フォルマントは REAPER キャッシュのみ焼き込み
+    // フォルマントが実際に効くのは2つだけ。
+    //   - REAPER 上の REAPER Shifter（élastique の set_formant_shift に渡る）
+    //   - Phase Vocoder（自前の包絡シフト）
+    // REAPER 外の élastique 直読みには入口が無いので、そこでは触れないようにする
+    // （以前は有効に見えていたが、動かしてもキャッシュが作り直されるだけだった）。
+    dimKnob ("formant",    (isReaper && reaperAvailable) || isPV);
     dimKnob ("stretchAmount", dur === 2);      // Stretch は Manual のみ
     dimKnob ("portaTime",  por !== 0);         // Glide / Curve / Group は Porta が Off でないとき
     dimKnob ("portaCurve", por !== 0);

@@ -33,6 +33,15 @@ using ReaperGetPitchShiftAPI_t = IReaperPitchShift* (*) (int);
 // 決め打ちしないのが肝。élastique 直読みで使用可能範囲を推測して間違えた
 // （Pro -39..+48 と申告していたが実際は ±24）ので、聞けるものは聞く。
 // 取れなければ REAPER 経路は全域とみなす（従来動作）。
+// REAPER のピッチシフト API が使えるか（＝フォルマントや広い音程範囲が使えるか）。
+// élastique 直読みにはフォルマントの入口が無いので、この判定が「効くかどうか」と一致する。
+bool PitchCache::reaperPathAvailable() const
+{
+    if (api == nullptr)
+        return false;
+    return api->getFunction ("ReaperGetPitchShiftAPI") != nullptr;
+}
+
 bool PitchCache::queryReaperRange (int mode, int sub, double sampleRate, int& lo, int& hi) const
 {
     if (api == nullptr)
@@ -69,7 +78,11 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
                             float start01, float end01, int elaMode)
 {
     // 微小変化での再レンダリング連発を避けるため量子化
-    const float  fq = std::round (formant * 4.0f) / 4.0f;        // 0.25半音刻み
+    // フォルマントは REAPER 経路でしか焼き込めない（élastique 直読みには入口が無い）。
+    // 効かないのに鍵に入れると、ノブを動かすだけでキャッシュが全部無効化され、
+    // 作り直している間ずっと Varispeed 再生に落ちる＝音が悪くなったように聞こえる。
+    const float  fUsed = reaperPathAvailable() ? formant : 0.0f;
+    const float  fq = std::round (fUsed * 4.0f) / 4.0f;        // 0.25半音刻み
     const double tq = std::round (timeRatio * 100.0) / 100.0;    // 0.01刻み
     const float  sq = std::round (std::clamp (start01, 0.0f, 1.0f) * 1000.0f) / 1000.0f;   // 0.1%刻み
     const float  eq = std::round (std::clamp (end01,   0.0f, 1.0f) * 1000.0f) / 1000.0f;

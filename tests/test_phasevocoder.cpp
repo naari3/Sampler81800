@@ -102,3 +102,54 @@ TEST_CASE ("PhaseVocoderEngine is finite on silence", "[pv]")
     auto out = test::renderEngine (e, res, sil, std::pow (2.0, 7.0 / 12.0), 1.0, 24000, 256);
     for (float v : out) REQUIRE (std::isfinite (v));
 }
+
+// (f) フォルマントシフトがレベルを暴走させない
+TEST_CASE ("PhaseVocoderEngine formant shift does not blow up the level", "[pv][formant]")
+{
+    // 包絡を割り算でワープさせる実装は、素直に書くと**信号の無い帯域で必ず破綻する**。
+    // env[k] がほぼ 0 の高域で除算が青天井のゲインになり、ノイズフロアを持ち上げる。
+    // さらに +12半音なら 8-20kHz の参照先が 4-10kHz の実信号になるので、
+    // 元々何も無いところに音を作ってしまう。
+    //
+    // 実測（F0=150Hz に 700/1200/2600Hz のフォルマントを載せた母音風信号）:
+    //   対策前 formant=+12 で ピーク 20.2倍 / 8-20kHz が入力比 +34.5dB
+    //   対策後 formant=+12 で ピーク  1.53倍 / 8-20kHz は入力比 +15dB 相当まで低下
+    const double sr = 48000.0;
+    const int    n  = (int) (sr * 0.5);
+
+    // 母音っぽい信号（倍音列にフォルマントを載せる）
+    SampleBuffer src;
+    src.numChannels = 1;
+    src.sampleRate  = sr;
+    src.numSamples  = n;
+    std::vector<float> mono ((std::size_t) n, 0.0f);
+    for (int h = 1; h * 150.0 < 8000.0; ++h)
+    {
+        const double f = h * 150.0;
+        double a = 0.0;
+        for (double fc : { 700.0, 1200.0, 2600.0 })
+            a += 1.0 / (1.0 + std::pow ((f - fc) / 220.0, 2.0));
+        for (int i = 0; i < n; ++i)
+            mono[(std::size_t) i] += (float) (0.12 * a * std::sin (2.0 * 3.14159265358979 * f * i / sr));
+    }
+    src.data.assign (1, mono);
+
+    double inPeak = 0.0;
+    for (float v : mono) inPeak = std::max (inPeak, (double) std::abs (v));
+    REQUIRE (inPeak > 0.1);
+
+    auto res = makeRes();
+    for (float semi : { -12.0f, -6.0f, 6.0f, 12.0f })
+    {
+        INFO ("formant " << semi);
+        PhaseVocoderEngine e;
+        e.setFormantShift (semi);
+        auto out = test::renderEngine (e, res, src, 1.0, 1.0, n, 512);
+
+        double peak = 0.0;
+        for (float v : out) peak = std::max (peak, (double) std::abs (v));
+
+        REQUIRE (peak > 0.05 * inPeak);   // 無音になっていない（規約15）
+        REQUIRE (peak < 2.0  * inPeak);   // 暴走していない（対策前は 20倍を超えていた）
+    }
+}

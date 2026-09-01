@@ -151,6 +151,9 @@ public:
 private:
     std::shared_ptr<SampleBuffer> renderShift (int semi, int& usedGen);
 
+    // REAPER のピッチシフト API が使えるか（＝フォルマントが効くか）。
+    bool reaperPathAvailable() const;
+
     // REAPER のシフタに生成可能範囲を問い合わせる（メッセージスレッド）。
     // REAPER 経路が使えたら true（範囲が取れなくても全域を入れて true）。
     bool queryReaperRange (int mode, int sub, double sampleRate, int& lo, int& hi) const;
