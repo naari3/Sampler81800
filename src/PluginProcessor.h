@@ -142,8 +142,12 @@ public:
     // GUI表示用: 現在の REAPER モード名/サブモード名/レイテンシ/個数
     juce::String getReaperModeText() const
     {
-        return juce::String (voices.getReaperModeName().c_str()) + " / "
-             + juce::String (voices.getReaperSubModeName().c_str())
+        // **.c_str() を付けないこと。** 付けると juce::String(const char*) が選ばれ、
+        // CharPointer_ASCII 実装（バイト=code point＝Latin-1 解釈）になって化ける
+        // （REAPER が返すモード名は UTF-8。"élastique" → "Ã©lastique"）。
+        // std::string をそのまま渡すと createFromFixedLength が CharPointer_UTF8 を使う。
+        return juce::String (voices.getReaperModeName()) + " / "
+             + juce::String (voices.getReaperSubModeName())
              + "  (lat=" + juce::String (voices.getReaperLatency())
              + ", modes=" + juce::String (voices.getReaperModeCount())
              + ", subs=" + juce::String (voices.getReaperSubModeCount()) + ")";

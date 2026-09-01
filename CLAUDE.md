@@ -69,6 +69,17 @@ pluginval --strictness-level 10 --validate build/.../OtoMadSampler.vst3
 ## コーディングスタイル
 - C++20。JUCEの命名規則に合わせる。
 - コメントは日本語可。DSPの数式は式そのものをコメントに残す。
+- **非ASCIIを含む文字列リテラルを `juce::String` に渡すときは必ず `otomad::u8()`
+  (`core/Utf8.h`) を通す。** `juce::String (const char*)` は `CharPointer_ASCII` 実装で、
+  バイト値をそのまま code point にする（＝Latin-1 解釈）。ソースは `/utf-8` でコンパイル
+  しているので直接渡すと化ける（"直" → "ç›´"）。デバッグビルドは jassert で気づけるが、
+  **配布ビルド(RelWithDebInfo)では assert が消えるので黙って化ける。**
+  コメント内の日本語は対象外（コンパイルされないため）。
+- **外部から受け取った文字列も同じ罠にかかる。** REAPER API のモード名、ffmpeg の出力、
+  ファイルパスなどは UTF-8 で来る。`std::string` は**そのまま渡せば UTF-8 として扱われる**が、
+  **`.c_str()` を付けると `const char*` オーバーロードに落ちて ASCII 扱いになる**。
+  `const char*` しか無いときは `juce::String::fromUTF8()` を使う。
+  （リテラル走査だけでは見つからないので、`.c_str()` を書いたら必ず疑うこと）
 - 1ファイル400行を超えたら分割を検討。
 - 「なぜそうしたか」が非自明な箇所には理由をコメントに残す。
   特に符号・順序を間違えやすい式（hop計算、位相アンラップ）は導出ごと書く。

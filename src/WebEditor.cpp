@@ -2,6 +2,7 @@
 #include "BinaryData.h"
 #include "core/FfmpegDecoder.h"
 #include "core/ParamHelp.h"
+#include "core/Utf8.h"
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -485,7 +486,7 @@ void OtoMadSamplerWebEditor::nfSetFfmpeg (const juce::Array<juce::var>& args,
 void OtoMadSamplerWebEditor::nfBrowseFfmpeg (const juce::Array<juce::var>&,
                                              juce::WebBrowserComponent::NativeFunctionCompletion complete)
 {
-    exeChooser = std::make_unique<juce::FileChooser> ("ffmpeg の実行ファイルを選択",
+    exeChooser = std::make_unique<juce::FileChooser> (otomad::u8 ("ffmpeg の実行ファイルを選択"),
                                                       juce::File(), "ffmpeg*");
     juce::Component::SafePointer<OtoMadSamplerWebEditor> safe (this);
     exeChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
@@ -542,7 +543,7 @@ void OtoMadSamplerWebEditor::nfSetElastique (const juce::Array<juce::var>& args,
 void OtoMadSamplerWebEditor::nfBrowseElastique (const juce::Array<juce::var>&,
                                                 juce::WebBrowserComponent::NativeFunctionCompletion complete)
 {
-    dllChooser = std::make_unique<juce::FileChooser> ("elastique3.dll を選択",
+    dllChooser = std::make_unique<juce::FileChooser> (otomad::u8 ("elastique3.dll を選択"),
                                                       juce::File ("C:\\Program Files"), "*.dll");
     // エディタが先に閉じられてもコールバックは飛んでくるので SafePointer で自身の生存を確認する。
     juce::Component::SafePointer<OtoMadSamplerWebEditor> safe (this);

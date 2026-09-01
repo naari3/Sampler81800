@@ -7,6 +7,7 @@
 #include "core/PitchDetect.h"
 #include "core/PitchFlattener.h"
 #include "core/Params.h"
+#include "core/Utf8.h"
 #include "core/SampleLoader.h"
 
 #include <algorithm>
@@ -534,8 +535,8 @@ void OtoMadSamplerProcessor::loadSampleFromMemory (juce::MemoryBlock bytes, juce
         if (! exe.existsAsFile())
         {
             const juce::ScopedLock sl (ffmpegLock);
-            lastLoadError = "デコードできませんでした: " + displayName
-                          + "（設定画面で ffmpeg を指定すると mp4 等も読めます）";
+            lastLoadError = otomad::u8 ("デコードできませんでした: ") + displayName
+                          + otomad::u8 ("（設定画面で ffmpeg を指定すると mp4 等も読めます）");
             return;
         }
 
@@ -555,7 +556,7 @@ void OtoMadSamplerProcessor::loadSampleFromMemory (juce::MemoryBlock bytes, juce
         if (sb == nullptr)
         {
             const juce::ScopedLock sl (ffmpegLock);
-            lastLoadError = "ffmpeg の出力を読めませんでした: " + displayName;
+            lastLoadError = otomad::u8 ("ffmpeg の出力を読めませんでした: ") + displayName;
             return;
         }
         // ffmpeg 経由でも UI にはドロップしたファイル名を出す（中間wavの名前ではなく）
@@ -577,22 +578,22 @@ juce::String OtoMadSamplerProcessor::getShifterStatusText() const
 
     // 直読み経路が実際に効く条件かどうかまで出す。効かないときに理由が分からないのが一番困る。
     if (! useCachePath())
-        return "elastique 直読み（実験）: Duration を Natural / Manual にすると有効";
+        return otomad::u8 ("elastique 直読み（実験）: Duration を Natural / Manual にすると有効");
 
     if ((int) pDurationMode->load() == 2)
     {
         const float st = pStretch->load();
         if (std::abs ((double) st - 1.0) > 1.0e-3)
-            return "elastique 直読み（実験）: ストレッチ中は非対応 → Varispeed 再生";
+            return otomad::u8 ("elastique 直読み（実験）: ストレッチ中は非対応 → Varispeed 再生");
     }
 
     const bool solo = (int) pElastiqueMode->load() == 1;
     int lo = 0, hi = 0;
     otomad::ElastiqueDirect::usableSemitoneRange (solo ? otomad::ElastiqueDirect::Soloist
                                                        : otomad::ElastiqueDirect::Pro, lo, hi);
-    return juce::String ("elastique 直読み（実験） / ")
-         + (solo ? "Soloist（単声専用）" : "Elastique Pro")
-         + "  " + juce::String (lo) + "〜+" + juce::String (hi) + " 半音";
+    return otomad::u8 ("elastique 直読み（実験） / ")
+         + otomad::u8 (solo ? "Soloist（単声専用）" : "Elastique Pro")
+         + "  " + juce::String (lo) + otomad::u8 ("〜+") + juce::String (hi) + otomad::u8 (" 半音");
 }
 
 juce::File OtoMadSamplerProcessor::ffmpegSettingsFile()
@@ -993,7 +994,7 @@ void OtoMadSamplerProcessor::applyFlattenResult (otomad::FlattenResult r, int sl
     if (! r.ok || r.audio.empty())
     {
         const juce::ScopedLock sl (ffmpegLock);
-        lastLoadError = "ピッチを検出できませんでした（音程のある区間を長めに選んでください）";
+        lastLoadError = otomad::u8 ("ピッチを検出できませんでした（音程のある区間を長めに選んでください）");
         return;
     }
 

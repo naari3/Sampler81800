@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 
+#include "Utf8.h"
+
 namespace otomad
 {
 
@@ -88,11 +90,11 @@ juce::File FfmpegDecoder::decodeToWav (const juce::File& ffmpeg,
     errorOut.clear();
 
     if (! ffmpeg.existsAsFile() || data == nullptr || size == 0)
-    { errorOut = "ffmpeg が設定されていません"; return {}; }
+    { errorOut = u8 ("ffmpeg が設定されていません"); return {}; }
 
     auto dir = tempDir();
     if (! dir.createDirectory())
-    { errorOut = "一時ディレクトリを作成できません: " + dir.getFullPathName(); return {}; }
+    { errorOut = u8 ("一時ディレクトリを作成できません: ") + dir.getFullPathName(); return {}; }
 
     // 入力の拡張子はデマルチプレクサのヒント。ffmpeg は中身も見るので厳密でなくてよい。
     auto ext = juce::File::createLegalFileName (originalName).fromLastOccurrenceOf (".", true, false);
@@ -104,7 +106,7 @@ juce::File FfmpegDecoder::decodeToWav (const juce::File& ffmpeg,
     const auto out = dir.getChildFile ("out_" + stamp + ".wav");
 
     if (! in.replaceWithData (data, size))
-    { errorOut = "一時ファイルに書き出せません: " + in.getFullPathName(); return {}; }
+    { errorOut = u8 ("一時ファイルに書き出せません: ") + in.getFullPathName(); return {}; }
 
     // -nostdin: 端末の無い環境で stdin 待ちハングを防ぐ（これが無いと固まることがある）
     // -vn     : 映像を落とす。既定のストリーム選択が最良の音声トラックを拾う
@@ -121,7 +123,7 @@ juce::File FfmpegDecoder::decodeToWav (const juce::File& ffmpeg,
     juce::ChildProcess proc;
     if (! proc.start (args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
     {
-        errorOut = "ffmpeg を起動できません: " + ffmpeg.getFullPathName();
+        errorOut = u8 ("ffmpeg を起動できません: ") + ffmpeg.getFullPathName();
         in.deleteFile();
         return {};
     }
@@ -134,7 +136,7 @@ juce::File FfmpegDecoder::decodeToWav (const juce::File& ffmpeg,
 
     if (proc.getExitCode() != 0 || ! out.existsAsFile() || out.getSize() == 0)
     {
-        errorOut = log.trim().isNotEmpty() ? log.trim() : juce::String ("ffmpeg のデコードに失敗しました");
+        errorOut = log.trim().isNotEmpty() ? log.trim() : u8 ("ffmpeg のデコードに失敗しました");
         out.deleteFile();
         return {};
     }
