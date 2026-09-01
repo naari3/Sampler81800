@@ -60,6 +60,11 @@ private:
     void nfGetFfmpeg     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfSetFfmpeg     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfBrowseFfmpeg  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfFlatten       (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfRevertFlatten (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfPitchContour  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfFlattenState  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfParamHelp     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
 
     // スライダ/コンボ/トグルのリレー＋アタッチメント
     template <typename RelayT, typename AttachT>

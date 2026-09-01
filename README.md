@@ -1,0 +1,167 @@
+# OtoMadSampler
+
+音MAD用のワンショット・サンプラープラグイン（VST3 / Windows）。
+
+音声ファイルをドラッグ＆ドロップして、鍵盤で音程を付けて鳴らします。
+喋り声のように音程が揺れている素材を「一定の音程で歌う」状態に整える **FLATTEN**、
+6種類のピッチシフトアルゴリズム、ビブラート、複数サンプルの切り替えなどを備えています。
+
+---
+
+## 動作環境
+
+- Windows 10 / 11（64bit）
+- VST3 に対応した DAW（REAPER / Ableton Live / Cubase など）
+- **WebView2 ランタイム**（任意）
+  - 入っていれば Web UI 版のエディタになります。Windows 11 には標準で入っています。
+  - 無い場合は自動的にネイティブ版エディタで開くので、そのままでも使えます。
+
+---
+
+## 導入
+
+### 1. ダウンロード
+
+[Releases](https://github.com/neon-uriel/Sampler81800/releases/latest) から
+`OtoMadSampler-Windows.zip` をダウンロードします。
+
+### 2. ブロックを解除する
+
+ダウンロードした zip を右クリック →「プロパティ」→ 下部に **「セキュリティ: このファイルは
+他のコンピューターから取得したものです」** と出ていたら **「許可する」にチェック** → OK。
+
+先に解除しないと、展開後のファイルにも制限が引き継がれて DAW が読み込めないことがあります。
+
+### 3. 展開してコピー
+
+zip の中に `OtoMadSampler.vst3` という**フォルダ**が入っています。これをそのまま
+
+```
+C:\Program Files\Common Files\VST3\
+```
+
+へコピーします（管理者権限の確認が出たら許可してください）。
+
+> `.vst3` はファイルではなくフォルダです。中身だけを取り出さず、フォルダごとコピーしてください。
+
+### 4. DAW でスキャン
+
+DAW を起動して、プラグインの再スキャンを実行します。
+
+| DAW | 操作 |
+|---|---|
+| REAPER | オプション → 設定 → プラグイン → VST → 「再スキャン」 |
+| Ableton Live | 環境設定 → Plug-Ins → 「Rescan」 |
+| Cubase | スタジオ → プラグインマネージャー → 「再スキャン」 |
+
+インストゥルメントとして `OtoMadSampler` が出てきたら成功です。
+
+---
+
+## 更新するとき
+
+プラグイン側でバージョンを確認していて、新しいリリースがあるとエディタ右上にボタンが出ます。
+押すと Releases ページが開きます。
+
+更新は上書きコピーですが、**先に DAW を必ず終了してください。**
+起動中は DLL がロックされていて上書きに失敗します（失敗しても分かりにくいので注意）。
+
+設定（配色・背景画像・外部ツールのパス）は
+
+```
+%APPDATA%\OtoMadSampler\
+```
+
+に保存されます。上書き更新しても消えません。
+
+---
+
+## 使いかた（最短）
+
+1. 波形エリアに音声ファイルをドラッグ＆ドロップ
+2. `DETECT ROOT` を押す（素材の音程を検出して、押した鍵盤の音程で鳴るようにします）
+3. 鍵盤 or MIDI で演奏
+
+覚えておくと便利なもの:
+
+- **波形の操作** — ホイールでズーム / 右ドラッグでスクロール / 左ドラッグでトリム範囲の指定
+- **鍵盤を右クリック** — その音を ROOT（原音の音程）に設定
+- **Space** — DAW の再生・停止（プラグイン画面にフォーカスがあっても効きます）
+- **ノブをダブルクリック** — 初期値に戻す
+- **VIBRATO タブ** — 発音から DELAY 待機 → FADE で立ち上げ → DEPTH の深さで揺れる
+- **⚙ ボタン** — 配色・背景画像・外部ツールの設定
+- **サンプルは複数持てます** — 続けてドロップすると SAMPLE 欄のプルダウンで切り替えられます。
+  設定はサンプルごとに保存されるので、差し替えて聴き比べられます
+
+### FLATTEN（音程を一定にする）
+
+`PITCH ▲` で区間のピッチ曲線を波形に重ねて確認し、`FLATTEN` を押すと
+その区間を1つの音程に揃えます。喋り声を「歌わせる」用途向けです。
+
+- `AMOUNT` で元の抑揚をどれだけ残すか調整できます（100% で完全に平坦）
+- `UNDO` で平坦化前に戻せます
+
+---
+
+## 外部ツール連携（任意・同梱していません）
+
+⚙ の設定画面から、お使いの PC にあるツールを指定すると機能が増えます。
+どちらも**指定しなければ従来どおりの動作**です。
+
+### ffmpeg — mp4 なども読み込めるようにする
+
+標準では wav / aiff / flac / mp3 / ogg を読めます。ffmpeg を指定すると、
+内蔵デコーダで読めなかったファイルだけを ffmpeg に回すようになり、
+**mp4 / m4a / webm / mkv / mov / opus** なども読み込めるようになります。
+
+`winget install ffmpeg` などで入れて PATH が通っていれば、設定画面の「自動検出」で見つかります。
+
+### élastique — REAPER 以外でも REAPER Shifter を使う（実験的）
+
+`REAPER Shifter` は本来 REAPER 上でしか動きませんが、REAPER に同梱されている
+`elastique3.dll` を指定すると、他の DAW でも使えるようになります。
+
+> **この DLL は zplane 社のライセンス品で、再配布できません。**
+> REAPER をインストール済みの環境で、ご自身の PC 上にあるものを指定してください。
+> 動作は無保証です。
+
+制限: `Duration` が Natural / Manual のときのみ有効。ストレッチ中は非対応。
+モードは `Elastique Pro`（-39〜+48半音）と `Soloist`（単声専用 / -17〜+41半音）から選べます。
+
+---
+
+## ソースからビルドする
+
+```
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --config RelWithDebInfo -j
+ctest --test-dir build --output-on-failure
+```
+
+必要なもの: CMake 3.22 以降、MSVC（C++20）。
+JUCE / Catch2 / signalsmith-stretch は FetchContent で自動取得されます。
+
+Web UI を静的リンクするため、WebView2 SDK（NuGet の
+`Microsoft.Web.WebView2`）が必要です。
+
+VST3 に加えて Standalone もビルドされます（`build/OtoMadSampler_artefacts/`）。
+現状 Standalone はリリースに同梱していないので、使いたい場合はビルドしてください。
+
+設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)、開発上の不変条件は [CLAUDE.md](CLAUDE.md) にあります。
+
+---
+
+## ライセンス
+
+**AGPL-3.0**（[LICENSE](LICENSE)）。
+
+JUCE を**無償枠**で使用しており、その条件が AGPLv3 での公開であるためです。
+同じ理由で、起動時に JUCE のスプラッシュが表示されます。
+
+使用している外部ライブラリ:
+
+- [JUCE](https://juce.com/) — AGPLv3
+- [signalsmith-stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) — MIT
+- [Catch2](https://github.com/catchorg/Catch2)（テストのみ） — BSL-1.0
+
+ffmpeg と élastique は**同梱しておらず**、ユーザーが指定したものを実行時に利用するだけです。

@@ -4,6 +4,8 @@
  #include "WebEditor.h"
 #endif
 #include "core/FfmpegDecoder.h"
+#include "core/PitchDetect.h"
+#include "core/PitchFlattener.h"
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -754,64 +756,6 @@ void OtoMadSamplerProcessor::reconfigureReaperMode()
     suspendProcessing (false);
 }
 
-// 1窓の YIN。x は DC除去済みのモノ窓。outFreq に基本周波数、戻り値は非周期性(0=完全周期, 小さいほど信頼)。
-static double yinDetectWindow (const float* x, int W, double sr, double& outFreq) noexcept
-{
-    outFreq = 0.0;
-    const int minTau = std::max (2, (int) (sr / 1500.0));   // 上限 ~1500Hz
-    const int maxTau = std::min (W / 2, (int) (sr / 50.0));  // 下限 ~50Hz
-    if (maxTau <= minTau)
-        return 1.0;
-
-    std::vector<float> dn ((std::size_t) (maxTau + 1), 1.0f);   // 累積平均正規化差分
-    float running = 0.0f;
-    for (int tau = minTau; tau <= maxTau; ++tau)
-    {
-        float sum = 0.0f;
-        for (int j = 0; j + tau < W; ++j)
-        {
-            const float diff = x[j] - x[j + tau];
-            sum += diff * diff;
-        }
-        running += sum;
-        dn[(std::size_t) tau] = running > 0.0f ? sum * (float) (tau - minTau + 1) / running : 1.0f;
-    }
-
-    // 標準YIN: 閾値を割る最初の谷まで下って、その谷の底(局所最小)を採る（オクターブ下取りを防ぐ）。
-    const float thr = 0.15f;
-    int best = -1;
-    for (int tau = minTau; tau < maxTau; ++tau)
-    {
-        if (dn[(std::size_t) tau] < thr)
-        {
-            while (tau + 1 < maxTau && dn[(std::size_t) (tau + 1)] < dn[(std::size_t) tau])
-                ++tau;
-            best = tau;
-            break;
-        }
-    }
-    if (best < 0)   // 閾値未達 → 全体最小
-    {
-        int mt = minTau; float mv = dn[(std::size_t) minTau];
-        for (int tau = minTau + 1; tau <= maxTau; ++tau)
-            if (dn[(std::size_t) tau] < mv) { mv = dn[(std::size_t) tau]; mt = tau; }
-        best = mt;
-    }
-
-    // 放物線補間
-    double tauR = best;
-    if (best > minTau && best < maxTau)
-    {
-        const float a = dn[(std::size_t) (best - 1)], b = dn[(std::size_t) best], c = dn[(std::size_t) (best + 1)];
-        const float den = a + c - 2.0f * b;
-        if (std::abs (den) > 1.0e-9f)
-            tauR = best + 0.5 * (double) ((a - c) / den);
-    }
-    if (tauR <= 0.0)
-        return 1.0;
-    outFreq = sr / tauR;
-    return dn[(std::size_t) best];
-}
 
 bool OtoMadSamplerProcessor::detectAndSetRoot()
 {
@@ -868,9 +812,9 @@ bool OtoMadSamplerProcessor::detectAndSetRoot()
             continue;
 
         double freq = 0.0;
-        const double aper = yinDetectWindow (buf.data(), w, sr, freq);
+        const double aper = otomad::pitchdetect::yinWindow (buf.data(), w, sr, freq);
         if (aper < 0.2 && freq > 0.0)
-            notes.push_back ((float) (69.0 + 12.0 * std::log2 (freq / 440.0)));
+            notes.push_back ((float) otomad::pitchdetect::hzToMidi (freq));
 
         if ((int) notes.size() >= maxWin)
             break;
@@ -894,6 +838,193 @@ bool OtoMadSamplerProcessor::detectAndSetRoot()
     if (auto* pc = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (otomad::params::pitchCents)))
         *pc = (float) cents;
     return true;
+}
+
+//==============================================================================
+// 区間内のピッチを検出して、その区間を単一の音程へ平坦化する（Melodyne 的な処理）。
+//
+// 書き換える対象は **original（原音SR）**。data(ホストSR) だけ書き換えると、SRが変わったときに
+// original から作り直されて平坦化が消える（規約16）。書き換え後に rebuildFromOriginal で
+// data と peaks を作り直す。
+//
+// 解析も合成も重いので背景スレッドで走らせ、スロットへの反映はメッセージスレッドへ戻して行う
+// （sampleList はメッセージスレッド専用）。
+void OtoMadSamplerProcessor::flattenActiveSample (float strength)
+{
+    auto* sb = activeSample.load();
+    if (sb == nullptr || sb->numChannels <= 0 || sb->originalSampleRate <= 0.0
+        || sb->original.empty() || sb->original[0].empty())
+        return;
+
+    const int    slot = activeIndex.load();
+    const double osr  = sb->originalSampleRate;
+    const auto   olen = (std::int64_t) sb->original[0].size();
+
+    // トリムは正規化値なので、原音側のインデックスへそのまま写せる（規約13）。
+    const double s01 = juce::jlimit (0.0f, 1.0f, pSampleStart->load());
+    const double e01 = juce::jlimit (0.0f, 1.0f, pSampleEnd->load());
+    const auto rs = (std::int64_t) std::llround (s01 * (double) olen);
+    const auto re = (std::int64_t) std::llround (e01 * (double) olen);
+
+    otomad::FlattenOptions opt;
+    opt.strength = juce::jlimit (0.0f, 1.0f, strength);
+
+    // 走っている間にサンプルが差し替えられても安全なようにコピーを渡す
+    auto snapshot = std::make_shared<std::vector<std::vector<float>>> (sb->original);
+    const int numCh = sb->numChannels;
+
+    loadPool.addJob ([this, snapshot, numCh, olen, osr, rs, re, opt, slot]
+    {
+        auto r = otomad::flattenToSinglePitch (*snapshot, numCh, olen, osr, rs, re, opt);
+        juce::WeakReference<OtoMadSamplerProcessor> safe (this);
+        juce::MessageManager::callAsync ([safe, r = std::move (r), slot]() mutable
+        {
+            if (safe != nullptr)
+                safe->applyFlattenResult (std::move (r), slot);
+        });
+    });
+}
+
+// スロットのバッファを差し替える。バッファは不変なので「作り直して入れ替える」。
+// 旧バッファはオーディオスレッドがまだ読んでいる可能性があるので graveyard で寿命を延ばす。
+void OtoMadSamplerProcessor::replaceSlotBuffer (int slot, std::shared_ptr<const otomad::SampleBuffer> next)
+{
+    if (next == nullptr)
+        return;
+    {
+        const juce::ScopedLock sl (graveyardLock);
+        sampleGraveyard.push_back (next);
+    }
+    {
+        const juce::ScopedLock sl (slotLock);
+        if (slot < 0 || slot >= (int) sampleList.size())
+            return;
+        // 差し替えで参照されなくなる側の FLAC キャッシュを捨てる（ポインタをキーにしているため）
+        {
+            const juce::ScopedLock fl (flacLock);
+            flacCache.erase (sampleList[(std::size_t) slot].get());
+        }
+        sampleList[(std::size_t) slot] = next;
+    }
+    if (activeIndex.load() == slot)
+        activeSample.store (next.get());
+
+    sampleVersion.fetch_add (1);   // ピッチキャッシュ再生成 & UI 更新
+}
+
+void OtoMadSamplerProcessor::applyFlattenResult (otomad::FlattenResult r, int slot)
+{
+    if (! r.ok || r.audio.empty())
+    {
+        const juce::ScopedLock sl (ffmpegLock);
+        lastLoadError = "ピッチを検出できませんでした（音程のある区間を長めに選んでください）";
+        return;
+    }
+
+    std::shared_ptr<const otomad::SampleBuffer> prev;
+    {
+        const juce::ScopedLock sl (slotLock);
+        if (slot < 0 || slot >= (int) sampleList.size())
+            return;
+        prev = sampleList[(std::size_t) slot];
+    }
+    if (prev == nullptr || prev->numChannels != (int) r.audio.size())
+        return;
+
+    // 平坦化した原音から新しいバッファを作る（既存バッファは書き換えない）
+    auto next = std::make_shared<otomad::SampleBuffer>();
+    next->numChannels        = prev->numChannels;
+    next->originalSampleRate = prev->originalSampleRate;
+    next->name               = prev->name;
+    next->path               = prev->path;
+    next->original           = std::move (r.audio);
+    otomad::SampleLoader::rebuildFromOriginal (*next, hostSampleRate.load());
+
+    flattenUndo.slot = slot;
+    flattenUndo.prev = prev;
+
+    flattenTarget   = r.targetNote;
+    flattenDetected = r.detectedMidi;
+    flattenFrames   = r.voicedFrames;
+    flattenResult   = r.resultMidi;
+
+    replaceSlotBuffer (slot, next);
+
+    // Root / Cent は **平坦化後の実測音程** から決める（DETECT ROOT と同じ 50cent グリッド）。
+    // targetNote を信じて Cent=0 にしてはいけない: AMOUNT<100% では目標まで寄り切らないため、
+    // 実際の音と最大 50cent ずれ、直後に DETECT を押すと違う値が出る（＝壊れて見える）。
+    const double P = r.resultMidi > 0.0 ? r.resultMidi : (double) r.targetNote;
+    const double G = std::round (P * 2.0) / 2.0;
+    if (auto* pr = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (otomad::params::rootKey)))
+        *pr = juce::jlimit (0, 127, (int) std::lround (P));
+    if (auto* pc = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (otomad::params::pitchCents)))
+        *pc = (float) juce::jlimit (-100.0, 100.0, (G - P) * 100.0);
+}
+
+bool OtoMadSamplerProcessor::canRevertFlatten() const
+{
+    const juce::ScopedLock sl (slotLock);
+    return flattenUndo.prev != nullptr
+        && flattenUndo.slot >= 0 && flattenUndo.slot < (int) sampleList.size();
+}
+
+bool OtoMadSamplerProcessor::revertFlatten()
+{
+    if (! canRevertFlatten())
+        return false;
+
+    const int slot = flattenUndo.slot;
+    auto prev = flattenUndo.prev;
+    flattenUndo = FlattenUndo{};
+    flattenTarget = -1; flattenDetected = 0.0; flattenFrames = 0; flattenResult = 0.0;
+
+    replaceSlotBuffer (slot, prev);
+    return true;
+}
+
+juce::var OtoMadSamplerProcessor::getFlattenState() const
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("targetNote", flattenTarget);
+    o->setProperty ("detected",   flattenDetected);
+    o->setProperty ("frames",     flattenFrames);
+    o->setProperty ("result",     flattenResult);
+    o->setProperty ("canRevert",  canRevertFlatten());
+    return juce::var (o);
+}
+
+// UI のピッチ曲線プレビュー（音は変えない）。解析は数十msかかるのでメッセージスレッドで
+// 呼ぶが、押したときだけなので許容する。
+juce::var OtoMadSamplerProcessor::analysePitchContour() const
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty ("ok", false);
+
+    const auto* sb = activeSample.load();
+    if (sb == nullptr || sb->original.empty() || sb->originalSampleRate <= 0.0)
+        return juce::var (o);
+
+    const auto olen = (std::int64_t) sb->original[0].size();
+    const double s01 = juce::jlimit (0.0f, 1.0f, pSampleStart->load());
+    const double e01 = juce::jlimit (0.0f, 1.0f, pSampleEnd->load());
+
+    const auto r = otomad::analyseOnly (sb->original, sb->numChannels, olen, sb->originalSampleRate,
+                                        (std::int64_t) std::llround (s01 * (double) olen),
+                                        (std::int64_t) std::llround (e01 * (double) olen));
+    if (! r.ok)
+        return juce::var (o);
+
+    juce::Array<juce::var> midi;
+    midi.ensureStorageAllocated ((int) r.contour.midi.size());
+    for (float m : r.contour.midi) midi.add (m);
+
+    o->setProperty ("ok",           true);
+    o->setProperty ("midi",         midi);
+    o->setProperty ("hopSeconds",   r.contour.hopSeconds);
+    o->setProperty ("startSeconds", r.contour.startSeconds);
+    o->setProperty ("detected",     r.detectedMidi);
+    o->setProperty ("targetNote",   r.targetNote);
+    return juce::var (o);
 }
 
 //==============================================================================

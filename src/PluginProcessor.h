@@ -10,6 +10,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "core/PitchFlattener.h"
 #include "core/SampleBuffer.h"
 #include "core/VoiceManager.h"
 #include "host/ReaperApi.h"
@@ -173,6 +174,20 @@ public:
     // 検出できたら true。明確な音程が無ければ Root は変えず false。
     bool  detectAndSetRoot();
 
+    // 区間内のピッチを検出して、その区間を単一の音程へ平坦化する（Melodyne 的な処理）。
+    // 原音(original)を書き換えて data/peaks を作り直すので、SR変更や保存にも追従する。
+    // 重いので背景スレッドで走る。完了は sampleVersion の更新で分かる。
+    // strength: 0=無変化, 1=完全に平坦。
+    void  flattenActiveSample (float strength);
+    // 平坦化前の原音へ戻す。戻せるものが無ければ false。
+    bool  revertFlatten();
+    bool  canRevertFlatten() const;
+    // 平坦化の状態（targetNote / detected / frames / canRevert / error）。音名の整形は
+    // JS 側の NOTE_NAMES に任せる（C++ で組むと表記がズレる）。
+    juce::var    getFlattenState() const;
+    // 解析だけして UI にピッチ曲線を返す（音は変えない）。
+    juce::var    analysePitchContour() const;
+
     //==========================================================================
     // アップデート確認: GitHub Releases API をバックグラウンドで叩き、最新版と比較する。
     void         checkForUpdatesAsync (bool force = false);
@@ -238,6 +253,25 @@ private:
     mutable juce::CriticalSection ffmpegLock;
     juce::File                    ffmpegExe;
     juce::String                  lastLoadError;
+
+    // ピッチ平坦化。メッセージスレッドからのみ触る。
+    // バッファは不変(shared_ptr<const>)なので、undo は「前のバッファを持っておく」だけでよい。
+    // 中身をその場で書き換えるとオーディオスレッドが読んでいる最中に壊れる。
+    struct FlattenUndo
+    {
+        int slot = -1;
+        std::shared_ptr<const otomad::SampleBuffer> prev;
+    };
+    FlattenUndo  flattenUndo;
+    int          flattenTarget = -1;    // 直近の平坦化の目標ノート（-1 = 未実施）
+    double       flattenDetected = 0.0;
+    int          flattenFrames = 0;
+    double       flattenResult = 0.0;   // 平坦化後の実測音程（MIDI実数）
+
+    // 背景で作った平坦化結果をスロットへ反映する（メッセージスレッド）
+    void applyFlattenResult (otomad::FlattenResult, int slot);
+    // スロットのバッファを差し替える（不要になった側の FLAC キャッシュも捨てる）
+    void replaceSlotBuffer (int slot, std::shared_ptr<const otomad::SampleBuffer> next);
     otomad::PitchCache      pitchCache;
     std::atomic<int>        cacheJobsActive { 0 };   // 稼働中の背景レンダジョブ数
 

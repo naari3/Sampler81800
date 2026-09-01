@@ -62,10 +62,12 @@ IPitchEngine* Voice::pickEngine (int algorithm) noexcept
         case 0: fallbackActive = false; return &varispeed;
         case 1: fallbackActive = false; return &wsola;
         case 2: fallbackActive = false; return &phaseVocoder;
+        case 3: fallbackActive = false; return &granular;
+        case 4: fallbackActive = false; return &stretchLib;
         case 5:                         // REAPER Shifter: REAPER上でのみ実動作
             if (reaper.isAvailable()) { fallbackActive = false; return &reaper; }
             fallbackActive = true;    return &phaseVocoder;   // 規約2: 代替(PV)へ
-        default:                        // 3,4 は未実装 → 規約2
+        default:                        // 想定外の値 → 規約2（無音を返さない）
             fallbackActive = true;    return &phaseVocoder;
     }
 }
@@ -306,9 +308,13 @@ int Voice::getReportedLatency (int algorithm) const noexcept
         case 0: return varispeed.getIntrinsicLatency();        // 0（生演奏で低遅延）
         case 1: return wsola.getIntrinsicLatency();
         case 2: return phaseVocoder.getIntrinsicLatency();
+        case 3: return granular.getIntrinsicLatency();
+        // StretchLib は STFT ブロックが 120ms と大きく、他エンジンより桁違いに遅い
+        // （48kHz で 5000サンプル超）。ここを PV の値のままにすると発音がズレる。
+        case 4: return stretchLib.getIntrinsicLatency();
         case 5: return reaper.isAvailable() ? reaper.getIntrinsicLatency()
                                             : phaseVocoder.getIntrinsicLatency();
-        default: return phaseVocoder.getIntrinsicLatency();    // 3,4 は PV フォールバック
+        default: return phaseVocoder.getIntrinsicLatency();    // 想定外の値 → PV フォールバック
     }
 }
 

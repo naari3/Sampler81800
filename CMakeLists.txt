@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(OtoMadSampler VERSION 0.3.0 LANGUAGES C CXX)
+project(OtoMadSampler VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,16 @@ FetchContent_Declare(JUCE
     GIT_TAG        8.0.15          # JUCE 8。バージョンを上げるときはここだけ変える
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(JUCE)
+
+# signalsmith-stretch（MIT・ヘッダオンリー）— StretchLibEngine の実体。DESIGN.md §4.6。
+# 自作エンジン（WSOLA / Phase Vocoder / Granular）との音質比較の基準にもなる。
+# タグは 1.1.0 までしか無く、必要な API は それ以降（ヘッダ内 version は 1.3.2）なので
+# 検証したコミットに固定する。main のままだと CI が別のコミットを引きうる。
+# SHA 指定と GIT_SHALLOW は併用できないので shallow は付けない。
+FetchContent_Declare(SignalsmithStretch
+    GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+    GIT_TAG        57b93f4e9206a089a45387eaa39bdc9f310d3308)
+FetchContent_MakeAvailable(SignalsmithStretch)
 
 # =====================================================================
 #  プラグイン本体
@@ -52,8 +62,12 @@ target_sources(OtoMadSampler PRIVATE
     src/pitch/VarispeedEngine.cpp
     src/pitch/WsolaEngine.cpp
     src/pitch/PhaseVocoderEngine.cpp
+    src/pitch/GranularEngine.cpp
+    src/pitch/StretchLibEngine.cpp
     src/pitch/ReaperPitchShiftEngine.cpp
     src/core/FfmpegDecoder.cpp
+    src/core/PitchDetect.cpp
+    src/core/PitchFlattener.cpp
     src/pitch/PitchCache.cpp
     src/pitch/ElastiqueDirect.cpp
     src/pitch/EngineResources.cpp
@@ -110,6 +124,7 @@ target_link_libraries(OtoMadSampler
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_vst3_headers   # VST3 SDK ヘッダ（REAPER連携の IHostApplication 取得用, §5.2）
+        signalsmith-stretch       # StretchLibEngine（MIT・ヘッダオンリー, §4.6）
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

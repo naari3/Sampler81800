@@ -25,6 +25,10 @@ std::shared_ptr<SampleBuffer> loadFromMemory (const void* data, std::size_t size
                                               double hostSampleRate,
                                               juce::AudioFormatManager& formatManager);
 
+// original を正として data(ホストSR) と peaks を作り直す。
+// original を書き換える処理（ピッチ平坦化など）の後に呼ぶ。規約16: 二重変換禁止。
+void rebuildFromOriginal (SampleBuffer& sb, double hostSampleRate);
+
 // 原音を FLAC(24bit)へエンコード。|x|>1 は normScale で正規化して保存（復元時に戻す）。
 bool encodeOriginalToFlac (const SampleBuffer& sb, juce::MemoryBlock& out, float& normScale);
 

@@ -19,20 +19,27 @@ add_executable(otomad_tests
     test_voice_alloc.cpp
     test_wsola.cpp
     test_phasevocoder.cpp
+    test_granular.cpp
+    test_stretchlib.cpp
     test_vibrato.cpp
+    test_pitchflatten.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
     ${CMAKE_SOURCE_DIR}/src/core/PortamentoGenerator.cpp
     ${CMAKE_SOURCE_DIR}/src/core/GlideMatcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/PitchDetect.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/PitchFlattener.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/VarispeedEngine.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/WsolaEngine.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/PhaseVocoderEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/GranularEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/StretchLibEngine.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/EngineResources.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/dsp/Fft.cpp)
 
 target_include_directories(otomad_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_features(otomad_tests PRIVATE cxx_std_20)
 target_compile_options(otomad_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
-target_link_libraries(otomad_tests PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(otomad_tests PRIVATE Catch2::Catch2WithMain signalsmith-stretch)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(CTest)

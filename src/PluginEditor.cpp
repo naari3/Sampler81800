@@ -1,43 +1,14 @@
 #include "PluginEditor.h"
+#include "core/ParamHelp.h"
 #include "BinaryData.h"
 
 namespace P = otomad::params;
 
 //==============================================================================
-// パラメータIDごとのホバーヘルプ（日本語）。ノブ/コンボに setTooltip する。
-// ソースは /utf-8 でコンパイルするので日本語リテラルを直接記述する。
+// ホバーヘルプの文言は core/ParamHelp.h に集約している（Web UI 版と共通）。
 static juce::String helpForParam (const juce::String& id)
 {
-    using namespace otomad::params;
-    auto u = [] (const char* s) { return juce::String (juce::CharPointer_UTF8 (s)); };
-    if (id == pitchSemi)     return u ("ピッチ（半音単位）");
-    if (id == pitchCents)    return u ("ピッチの微調整（セント）");
-    if (id == octave)        return u ("オクターブ変更（±4）");
-    if (id == rootKey)       return u ("ルート鍵盤：この音で原音のピッチになる");
-    if (id == gain)          return u ("出力ゲイン");
-    if (id == attack)        return u ("アタック：発音から最大音量までの時間");
-    if (id == decay)         return u ("ディケイ：最大からサステイン音量へ減る時間");
-    if (id == sustain)       return u ("サステイン：鍵を押し続けた時の音量");
-    if (id == release)       return u ("リリース：離鍵後に音が消える時間");
-    if (id == sampleStart)   return u ("再生開始位置（トリム頭）");
-    if (id == sampleEnd)     return u ("再生終了位置（トリム尻）");
-    if (id == portaTime)     return u ("グライド（ポルタメント）時間");
-    if (id == portaCurve)    return u ("グライドのカーブ（Timeモード）");
-    if (id == glideGroupMs)  return u ("和音とみなす時間窓（ポリグライド）");
-    if (id == maxVoices)     return u ("最大同時発音数（Poly時）");
-    if (id == bendRange)     return u ("ピッチベンド幅（半音）");
-    if (id == stretchAmount) return u ("長さ倍率（Duration=Manual 時）");
-    if (id == formant)       return u ("フォルマントシフト（REAPER、正の値のみ有効）");
-    if (id == interpQuality) return u ("補間品質（Linear / Hermite）");
-    if (id == portaMode)     return u ("Off / Legato（重なり時）/ Always（常に）");
-    if (id == portaShape)    return u ("グライド形状：Time（曲線）/ Analog（指数）");
-    if (id == polyMode)      return u ("Mono（単音）/ Poly（和音）");
-    if (id == algorithm)     return u ("ピッチ変更アルゴリズム");
-    if (id == durationMode)  return u ("長さ制御：Natural / Sync / Manual");
-    if (id == syncLength)    return u ("同期長（Duration=Sync 時）");
-    if (id == snapZeroCross) return u ("トリム端をゼロクロスへ吸着（プチ防止）");
-    if (id == phaseLock)     return u ("位相ロック（Phase Vocoder）");
-    return {};
+    return juce::String (juce::CharPointer_UTF8 (otomad::params::helpFor (id.toRawUTF8())));
 }
 
 //==============================================================================

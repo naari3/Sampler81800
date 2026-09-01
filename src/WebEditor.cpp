@@ -1,6 +1,7 @@
 #include "WebEditor.h"
 #include "BinaryData.h"
 #include "core/FfmpegDecoder.h"
+#include "core/ParamHelp.h"
 #include "core/Params.h"
 #include "core/SampleLoader.h"
 
@@ -165,7 +166,12 @@ OtoMadSamplerWebEditor::OtoMadSamplerWebEditor (OtoMadSamplerProcessor& p)
         .withNativeFunction ("spaceToHost",   fn (&OtoMadSamplerWebEditor::nfSpaceToHost))
         .withNativeFunction ("getFfmpeg",     fn (&OtoMadSamplerWebEditor::nfGetFfmpeg))
         .withNativeFunction ("setFfmpeg",     fn (&OtoMadSamplerWebEditor::nfSetFfmpeg))
-        .withNativeFunction ("browseFfmpeg",  fn (&OtoMadSamplerWebEditor::nfBrowseFfmpeg));
+        .withNativeFunction ("browseFfmpeg",  fn (&OtoMadSamplerWebEditor::nfBrowseFfmpeg))
+        .withNativeFunction ("flatten",       fn (&OtoMadSamplerWebEditor::nfFlatten))
+        .withNativeFunction ("revertFlatten", fn (&OtoMadSamplerWebEditor::nfRevertFlatten))
+        .withNativeFunction ("pitchContour",  fn (&OtoMadSamplerWebEditor::nfPitchContour))
+        .withNativeFunction ("flattenState",  fn (&OtoMadSamplerWebEditor::nfFlattenState))
+        .withNativeFunction ("paramHelp",     fn (&OtoMadSamplerWebEditor::nfParamHelp));
 
     web = std::make_unique<juce::WebBrowserComponent> (options);
     addAndMakeVisible (*web);
@@ -408,6 +414,51 @@ namespace
                                                        : otomad::FfmpegDecoder::find().getFullPathName());
         return juce::var (o);
     }
+}
+
+// JS: flatten(strength01) — 区間内のピッチを検出して単一の音程へ平坦化する。
+// 実処理は背景スレッドなので、完了は sampleChanged イベントで分かる。
+void OtoMadSamplerWebEditor::nfFlatten (const juce::Array<juce::var>& args,
+                                        juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    const float st = args.size() >= 1 ? (float) (double) args[0] : 1.0f;
+    processor.flattenActiveSample (st);
+    complete (true);
+}
+
+// JS: revertFlatten() — 平坦化前のバッファへ戻す
+void OtoMadSamplerWebEditor::nfRevertFlatten (const juce::Array<juce::var>&,
+                                              juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (processor.revertFlatten());
+}
+
+// JS: pitchContour() — 波形に重ねるピッチ曲線（音は変えない）
+void OtoMadSamplerWebEditor::nfPitchContour (const juce::Array<juce::var>&,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (processor.analysePitchContour());
+}
+
+// JS: flattenState() — 平坦化の結果と undo 可否。音名の整形は JS 側で行う。
+void OtoMadSamplerWebEditor::nfFlattenState (const juce::Array<juce::var>&,
+                                             juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    complete (processor.getFlattenState());
+}
+
+// JS: paramHelp() — パラメータIDごとのホバーヘルプ（{id: 文言}）。
+// 文言は core/ParamHelp.h にあり、ネイティブ版エディタの setTooltip と同じものを使う。
+void OtoMadSamplerWebEditor::nfParamHelp (const juce::Array<juce::var>&,
+                                          juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    auto* o = new juce::DynamicObject();
+    std::size_t n = 0;
+    const auto* t = otomad::params::helpTable (n);
+    for (std::size_t i = 0; i < n; ++i)
+        o->setProperty (juce::Identifier (t[i].id),
+                        juce::String (juce::CharPointer_UTF8 (t[i].text)));
+    complete (juce::var (o));
 }
 
 // JS: getFfmpeg()

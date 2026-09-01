@@ -22,6 +22,7 @@ void EngineResources::prepare (double /*sampleRate*/)
 {
     makeHann (hannWsola, wsolaFrame);
     makeHann (hannFft,   fftSize);
+    makeHann (hannGran,  granFrame);
 }
 
 } // namespace otomad

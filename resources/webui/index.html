@@ -34,6 +34,17 @@
       <button class="btn" id="btn-normalize">NORMALIZE</button>
     </div>
 
+    <!-- 区間内のピッチを検出して1つの音程へ平坦化する（Melodyne 的な処理） -->
+    <div class="row flatten-row">
+      <button class="btn" id="btn-contour" title="区間のピッチ曲線を波形に重ねて表示">PITCH ▲</button>
+      <button class="btn" id="btn-flatten" title="区間のピッチを1つの音程に揃える">FLATTEN</button>
+      <button class="btn" id="btn-unflatten" title="平坦化する前に戻す" disabled>UNDO</button>
+      <label class="field grow"><span>AMOUNT <i id="lbl-flatten">100%</i></span>
+        <input type="range" id="flatten-amount" min="0" max="1" step="0.05" value="1"></label>
+      <span class="spacer"></span>
+      <span class="flatten-info" id="flatten-info"></span>
+    </div>
+
     <div class="wave-wrap" id="wave-wrap">
       <canvas id="wave"></canvas>
       <div class="drop-hint" id="drop-hint">

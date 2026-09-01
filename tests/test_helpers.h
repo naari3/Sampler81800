@@ -56,4 +56,34 @@ inline double estimateF0 (const float* x, int n, double sampleRate, float thresh
     return (double) count / (lastT - firstT);
 }
 
+// 期待周波数の ±40% だけを探索する自己相関で F0 を測る。
+// estimateF0（ゼロ交差カウント）は振幅変調のある信号だと交差を数え落として
+// オクターブ下を報告するため、Granular のように粒ごとに振幅が揺れる出力には使えない。
+inline double estimateF0Near (const float* x, int n, double sampleRate, double wantHz)
+{
+    auto corr = [&] (int lag)
+    {
+        double s = 0.0, ea = 0.0, eb = 0.0;
+        for (int i = 0; i < n - lag; ++i)
+        { const double u = x[i], v = x[i + lag]; s += u * v; ea += u * u; eb += v * v; }
+        const double d = std::sqrt (ea * eb);
+        return d > 1.0e-12 ? s / d : 0.0;
+    };
+
+    const double wantLag = sampleRate / wantHz;
+    const int lo = std::max (2, (int) (wantLag * 0.6));
+    const int hi = (int) (wantLag * 1.4) + 2;
+
+    double best = -1.0; int bestLag = 0;
+    for (int lag = lo; lag <= hi && lag < n / 2; ++lag)
+    { const double r = corr (lag); if (r > best) { best = r; bestLag = lag; } }
+    if (bestLag <= lo || best < 0.3)
+        return 0.0;
+
+    const double y0 = corr (bestLag - 1), y1 = best, y2 = corr (bestLag + 1);
+    const double den = y0 - 2.0 * y1 + y2;
+    const double dl = std::abs (den) > 1.0e-12 ? 0.5 * (y0 - y2) / den : 0.0;
+    return sampleRate / ((double) bestLag + dl);
+}
+
 } // namespace otomad::test

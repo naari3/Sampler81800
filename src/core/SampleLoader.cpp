@@ -58,31 +58,47 @@ static std::shared_ptr<SampleBuffer> buildFromReader (juce::AudioFormatReader& r
         sb->original[(std::size_t) ch].assign (tmp.getReadPointer (ch),
                                                tmp.getReadPointer (ch) + nativeLen);
 
+    rebuildFromOriginal (*sb, hostSampleRate);
+    return sb;
+}
+
+// original を正として data(ホストSR) と peaks を作り直す。
+// original を書き換える処理（ピッチ平坦化など）の後始末に使う。
+// data を再リサンプルせず必ず original から一度だけ変換する（規約16: 二重変換禁止）。
+void rebuildFromOriginal (SampleBuffer& sb, double hostSampleRate)
+{
+    const int    numCh     = sb.numChannels;
+    const double nativeSR  = sb.originalSampleRate;
+    if (numCh <= 0 || nativeSR <= 0.0 || (int) sb.original.size() < numCh)
+        return;
+    const i64 nativeLen = (i64) sb.original[0].size();
+    if (nativeLen <= 0)
+        return;
+
     if (std::abs (nativeSR - hostSampleRate) < 1.0e-6)
     {
-        sb->data       = sb->original;
-        sb->numSamples = nativeLen;
-        sb->sampleRate = hostSampleRate;
+        sb.data       = sb.original;
+        sb.numSamples = nativeLen;
+        sb.sampleRate = hostSampleRate;
     }
     else
     {
         const double ratio  = nativeSR / hostSampleRate;
         const i64    outLen = (i64) std::ceil ((double) nativeLen * hostSampleRate / nativeSR);
-        sb->data.assign ((std::size_t) numCh, std::vector<float> ((std::size_t) outLen, 0.0f));
+        sb.data.assign ((std::size_t) numCh, std::vector<float> ((std::size_t) outLen, 0.0f));
         for (int ch = 0; ch < numCh; ++ch)
         {
-            std::vector<float> in = sb->original[(std::size_t) ch];
+            std::vector<float> in = sb.original[(std::size_t) ch];
             in.resize ((std::size_t) (nativeLen + 8), 0.0f);
             juce::LagrangeInterpolator interp;
             interp.reset();
-            interp.process (ratio, in.data(), sb->data[(std::size_t) ch].data(), (int) outLen);
+            interp.process (ratio, in.data(), sb.data[(std::size_t) ch].data(), (int) outLen);
         }
-        sb->numSamples = outLen;
-        sb->sampleRate = hostSampleRate;
+        sb.numSamples = outLen;
+        sb.sampleRate = hostSampleRate;
     }
 
-    computePeaks (*sb);
-    return sb;
+    computePeaks (sb);
 }
 
 std::shared_ptr<SampleBuffer> loadFile (const juce::File& file,

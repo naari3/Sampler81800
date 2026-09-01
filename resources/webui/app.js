@@ -91,6 +91,7 @@ import ("./juce-index.js").then ((juce) => {
   const keyEls = new Map();                  // MIDIノート → 鍵盤要素
   let peaks = null, normGain = 1;            // 波形ピーク
   let view = { start: 0, end: 1 };           // 波形の表示窓（全体に対する割合）
+  let contour = null;                        // ピッチ曲線（PITCH ボタンで取得）
   let pendingLoadName = null, pendingLoadTimer = 0;   // 非同期デコードの完了待ち
   let sampleSeconds = 0;                              // 読み込んだ素材の長さ（秒）
 
@@ -124,6 +125,11 @@ import ("./juce-index.js").then ((juce) => {
   const nfGetFfmpeg       = getNativeFunction ("getFfmpeg");
   const nfSetFfmpeg       = getNativeFunction ("setFfmpeg");
   const nfBrowseFfmpeg    = getNativeFunction ("browseFfmpeg");
+  const nfFlatten         = getNativeFunction ("flatten");
+  const nfRevertFlatten   = getNativeFunction ("revertFlatten");
+  const nfPitchContour    = getNativeFunction ("pitchContour");
+  const nfFlattenState    = getNativeFunction ("flattenState");
+  const nfParamHelp       = getNativeFunction ("paramHelp");
 
   //================================================================ knobs
   // SVG で描く（conic-gradient より線端・アンチエイリアスが綺麗）。
@@ -358,6 +364,43 @@ import ("./juce-index.js").then ((juce) => {
     }
     ctx.stroke();
 
+    // ピッチ曲線（PITCH で取得したときだけ）。
+    // 縦軸は「検出された音程の範囲」に自動スケールする。絶対音高より
+    // 「どれだけ揺れているか」が見たいので、レンジは最低でも 4半音は確保する。
+    if (contour && contour.ok && contour.midi && contour.midi.length && sampleSeconds > 0) {
+      const vals = contour.midi.filter ((m) => m > 0);
+      if (vals.length > 1) {
+        let lo = Math.min.apply (null, vals), hi = Math.max.apply (null, vals);
+        const mid2 = (lo + hi) / 2, span = Math.max (4, hi - lo + 1);
+        lo = mid2 - span / 2; hi = mid2 + span / 2;
+
+        const toY = (m) => h - (m - lo) / (hi - lo) * h;
+        // 目標（スナップ先）の水平線
+        if (contour.targetNote >= lo && contour.targetNote <= hi) {
+          const y = Math.round (toY (contour.targetNote)) + .5;
+          ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1;
+          ctx.setLineDash ([4, 4]);
+          ctx.beginPath(); ctx.moveTo (0, y); ctx.lineTo (w, y); ctx.stroke();
+          ctx.setLineDash ([]);
+        }
+        // 曲線本体。無声(0)のフレームで線を切る
+        ctx.strokeStyle = "#7cf5c8"; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        let pen = false;
+        for (let i = 0; i < contour.midi.length; ++i) {
+          const m = contour.midi[i];
+          if (m <= 0) { pen = false; continue; }
+          const tSec = contour.startSeconds + i * contour.hopSeconds;
+          const x = toX (tSec / sampleSeconds);
+          if (x < -4 || x > w + 4) { pen = false; continue; }
+          const y = toY (m);
+          if (pen) ctx.lineTo (x, y); else ctx.moveTo (x, y);
+          pen = true;
+        }
+        ctx.stroke();
+      }
+    }
+
     // トリムのハンドル（縦線＋上下のつまみ）
     ctx.strokeStyle = "#ff9f4a"; ctx.fillStyle = "#ff9f4a"; ctx.lineWidth = 1;
     for (const p of [s01, e01]) {
@@ -572,8 +615,62 @@ import ("./juce-index.js").then ((juce) => {
     const btn = document.getElementById ("btn-detect");
     const ok = await nfDetectRoot();
     btn.textContent = ok ? "DETECT ✓" : "?";
-    setTimeout (() => { btn.textContent = "DETECT"; }, 900);
+    // 元のラベルへ戻す。"DETECT" 決め打ちだと押すたびに "DETECT ROOT" が痩せていく。
+    setTimeout (() => { btn.textContent = "DETECT ROOT"; }, 900);
   });
+
+  //---------------------------------------------------------------- ピッチ平坦化
+  const flattenAmount = document.getElementById ("flatten-amount");
+  const flattenLabel  = document.getElementById ("lbl-flatten");
+  const flattenInfoEl = document.getElementById ("flatten-info");
+  const btnFlatten    = document.getElementById ("btn-flatten");
+  const btnUnflatten  = document.getElementById ("btn-unflatten");
+  const btnContour    = document.getElementById ("btn-contour");
+
+  flattenAmount.addEventListener ("input", () => {
+    flattenLabel.textContent = Math.round (Number (flattenAmount.value) * 100) + "%";
+  });
+
+  // ピッチ曲線の表示トグル。解析は数十ms かかるので押したときだけ走らせる。
+  btnContour.addEventListener ("click", async () => {
+    if (contour) { contour = null; btnContour.classList.remove ("active"); drawWave(); return; }
+    btnContour.textContent = "…";
+    const r = await nfPitchContour();
+    btnContour.textContent = "PITCH ▲";
+    if (! r || ! r.ok) { note ("ピッチを検出できませんでした"); return; }
+    contour = r;
+    btnContour.classList.add ("active");
+    flattenInfoEl.textContent = "検出 " + noteName (r.targetNote) + " (" + r.detected.toFixed (2) + ")";
+    drawWave();
+  });
+
+  btnFlatten.addEventListener ("click", async () => {
+    btnFlatten.disabled = true;
+    btnFlatten.textContent = "…";
+    // 実処理は背景スレッド。完了は sampleChanged で拾う。
+    await nfFlatten (Number (flattenAmount.value));
+  });
+
+  btnUnflatten.addEventListener ("click", async () => {
+    if (await nfRevertFlatten()) {
+      contour = null; btnContour.classList.remove ("active");
+      flattenInfoEl.textContent = "";
+      refreshWave();
+    }
+  });
+
+  // 平坦化の完了/状態を UI に反映する（sampleChanged のたびに呼ぶ）
+  async function refreshFlatten () {
+    btnFlatten.disabled = false;
+    btnFlatten.textContent = "FLATTEN";
+    const st2 = await nfFlattenState();
+    if (! st2) return;
+    btnUnflatten.disabled = ! st2.canRevert;
+    flattenInfoEl.textContent = st2.targetNote >= 0
+      ? noteName (st2.targetNote) + " に平坦化 (結果 " + st2.result.toFixed (2)
+        + " / 元 " + st2.detected.toFixed (2) + " / " + st2.frames + "フレーム)"
+      : "";
+  }
 
   //---------------------------------------------------------------- ADSR
   window.drawAdsr = drawAdsr;
@@ -844,13 +941,16 @@ import ("./juce-index.js").then ((juce) => {
   window.__JUCE__.backend.addEventListener ("sampleChanged", () => {
     pendingLoadName = null; clearTimeout (pendingLoadTimer);
     note ("");
-    refreshWave(); refreshReaper(); refreshSampleList();
+    contour = null;                                  // 音が変わったので曲線は作り直し
+    document.getElementById ("btn-contour").classList.remove ("active");
+    refreshWave(); refreshReaper(); refreshSampleList(); refreshFlatten();
   });
   // デコード失敗（背景スレッドなので loadSample の戻り値では返せない）。
   // ffmpeg の stderr がそのまま入ってくるので、原因が UI で読める。
   window.__JUCE__.backend.addEventListener ("loadError", (e) => {
     pendingLoadName = null; clearTimeout (pendingLoadTimer);
     note (e && e.message ? e.message : "読み込みに失敗しました");
+    refreshFlatten();   // 平坦化が失敗した場合もボタンを戻す
   });
   window.__JUCE__.backend.addEventListener ("status", (s) => {
     const bar = document.getElementById ("cache-bar");
@@ -991,6 +1091,65 @@ import ("./juce-index.js").then ((juce) => {
   window.__JUCE__.backend.addEventListener ("appearanceChanged", refreshAppearance);
   refreshAppearance();
 
+  //---------------------------------------------------------------- ホバーヘルプ
+  // ネイティブ版エディタは JUCE の TooltipWindow で出していたが、Web UI 版には
+  // 移植されていなかった。文言は C++ 側（core/ParamHelp.h）から取るので二重管理しない。
+  // ブラウザ既定の title ツールチップは遅延も見た目も制御できないので自前で出す。
+  const tipEl = document.createElement ("div");
+  tipEl.className = "hovertip";
+  tipEl.hidden = true;
+  document.body.appendChild (tipEl);
+
+  let tipTimer = 0;
+  function hideTip () { clearTimeout (tipTimer); tipEl.hidden = true; }
+  function showTipFor (el, text) {
+    clearTimeout (tipTimer);
+    tipTimer = setTimeout (() => {
+      tipEl.textContent = text;
+      tipEl.hidden = false;
+      // いったん表示してから実寸で位置を決める（画面外へはみ出さないように寄せる）
+      const r = el.getBoundingClientRect();
+      const t = tipEl.getBoundingClientRect();
+      let x = r.left + r.width / 2 - t.width / 2;
+      let y = r.bottom + 8;
+      x = Math.max (4, Math.min (x, window.innerWidth  - t.width  - 4));
+      if (y + t.height > window.innerHeight - 4) y = r.top - t.height - 8;   // 下が狭ければ上へ
+      tipEl.style.left = Math.round (x) + "px";
+      tipEl.style.top  = Math.round (y) + "px";
+    }, 450);
+  }
+
+  function attachHelp (el, text) {
+    if (! el || ! text) return;
+    el.addEventListener ("mouseenter", () => showTipFor (el, text));
+    el.addEventListener ("mouseleave", hideTip);
+    el.addEventListener ("pointerdown", hideTip);   // 操作を始めたら邪魔なので消す
+  }
+
+  nfParamHelp().then ((help) => {
+    if (! help) return;
+    // ノブ: ラベルと値も含めたセル全体を当たり判定にする（ノブ本体だけだと狭い）
+    for (const knob of document.querySelectorAll (".knob[data-relay]")) {
+      const text = help[knob.dataset.relay];
+      attachHelp (knob.closest (".knob-cell") || knob, text);
+    }
+    // コンボ / チェックボックス: ラベルごと当たり判定にする
+    for (const id of Object.keys (help)) {
+      const sel = document.getElementById ("sel-" + id);
+      if (sel) attachHelp (sel.closest ("label") || sel, help[id]);
+      const chk = document.getElementById ("chk-" + id);
+      if (chk) attachHelp (chk.closest ("label") || chk, help[id]);
+    }
+    // DOM の id がパラメータ名と違うものは個別に対応付ける
+    for (const [domId, paramId] of [["sel-rmode", "reaperMode"], ["sel-rsub", "reaperSubMode"]]) {
+      const el = document.getElementById (domId);
+      if (el) attachHelp (el.closest ("label") || el, help[paramId]);
+    }
+  }).catch (() => {});
+
+  // タブを切り替えたら出しっぱなしにしない
+  window.addEventListener ("blur", hideTip);
+
   // ---- Space = ホストの再生/停止 ----
   // WebView2 はネイティブ子ウィンドウなので、フォーカスがあると Space が DAW まで届かない。
   // さらに直前に押したボタンにフォーカスが残っていると Space でそれが再クリックされてしまう。
@@ -1029,6 +1188,7 @@ import ("./juce-index.js").then ((juce) => {
 
   refreshWave();
   refreshSampleList();
+  refreshFlatten();
   layoutCanvases();
   statusEl.textContent = "ready";
 }).catch (e => showError (String (e && e.message ? e.message : e)));

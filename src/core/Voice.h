@@ -11,6 +11,8 @@
 #include "pitch/VarispeedEngine.h"
 #include "pitch/WsolaEngine.h"
 #include "pitch/PhaseVocoderEngine.h"
+#include "pitch/GranularEngine.h"
+#include "pitch/StretchLibEngine.h"
 #include "pitch/ReaperPitchShiftEngine.h"
 
 namespace otomad
@@ -135,6 +137,8 @@ private:
     VarispeedEngine        varispeed;
     WsolaEngine            wsola;
     PhaseVocoderEngine     phaseVocoder;
+    GranularEngine         granular;
+    StretchLibEngine       stretchLib;
     ReaperPitchShiftEngine reaper;
     IPitchEngine*          activeEngine = &varispeed;
     bool                   fallbackActive = false;
