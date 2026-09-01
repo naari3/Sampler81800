@@ -81,24 +81,31 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     // フォルマントは REAPER 経路でしか焼き込めない（élastique 直読みには入口が無い）。
     // 効かないのに鍵に入れると、ノブを動かすだけでキャッシュが全部無効化され、
     // 作り直している間ずっと Varispeed 再生に落ちる＝音が悪くなったように聞こえる。
-    const float  fUsed = reaperPathAvailable() ? formant : 0.0f;
+    const bool   reaperOk = reaperPathAvailable();
+    const bool   elaOk    = (elastique != nullptr && elastique->isAvailable());
+    const float  fUsed = reaperOk ? formant : 0.0f;
     const float  fq = std::round (fUsed * 4.0f) / 4.0f;        // 0.25半音刻み
     const double tq = std::round (timeRatio * 100.0) / 100.0;    // 0.01刻み
     const float  sq = std::round (std::clamp (start01, 0.0f, 1.0f) * 1000.0f) / 1000.0f;   // 0.1%刻み
     const float  eq = std::round (std::clamp (end01,   0.0f, 1.0f) * 1000.0f) / 1000.0f;
 
-    // 生成できる半音範囲を先に更新する（設定が変わっていなくても、élastique の
-    // 読み込みが後から成功することがあるので毎回見直す）。
-    // モード/サブモードが変わったときだけ REAPER に問い合わせる（インスタンス生成を伴うため）。
-    if (mode != probedMode || sub != probedSub || elaMode != probedElaMode)
+    // 生成できる半音範囲を更新する。
+    // **バックエンドが「使えるようになったか」も条件に入れること。** モード番号だけを
+    // 見ていると、起動時にどちらのバックエンドも無くて空範囲(lo=1,hi=0)が入った後、
+    // 後から élastique DLL を設定しても（あるいは REAPER の attach が遅れて完了しても）
+    // 二度と問い合わせ直さず、request() が全音程を弾き続けてキャッシュが永久に作られない。
+    // 問い合わせは REAPER のシフタ生成を伴うので、変化したときだけ走らせる。
+    if (mode != probedMode || sub != probedSub || elaMode != probedElaMode
+        || reaperOk != probedReaperOk || elaOk != probedElaOk)
     {
         probedMode = mode; probedSub = sub; probedElaMode = elaMode;
+        probedReaperOk = reaperOk; probedElaOk = elaOk;
 
         int lo = 1, hi = 0;   // 既定は空範囲＝一切要求しない
         if (! queryReaperRange (mode, sub, sampleRate, lo, hi))
         {
             // REAPER が使えない → élastique 直読みの制限に従う。どちらも無ければ空のまま。
-            if (elastique != nullptr && elastique->isAvailable())
+            if (elaOk)
                 ElastiqueDirect::usableSemitoneRange (elaMode == 1 ? ElastiqueDirect::Soloist
                                                                    : ElastiqueDirect::Pro, lo, hi);
         }

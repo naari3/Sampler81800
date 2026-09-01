@@ -242,7 +242,12 @@ import ("./juce-index.js").then ((juce) => {
     };
     state.propertiesChangedEvent.addListener (fill);
     state.valueChangedEvent.addListener (() => {
-      sel.value = String (state.getChoiceIndex());
+      const cur = state.getChoiceIndex();
+      // 隠している選択肢に値が変わった場合（プリセット読み込み・オートメーション）、
+      // 対応する option が無いので sel.value が空になり、コンボが空欄になる。
+      // その値を含めて作り直す。
+      if (! sel.querySelector ('option[value="' + cur + '"]')) { fill(); return; }
+      sel.value = String (cur);
       updateEnablement();
     });
     fill();

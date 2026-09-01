@@ -238,12 +238,14 @@ FlattenResult flattenToSinglePitch (const std::vector<std::vector<float>>& in, i
         // pitchRatio でフレームを1つ合成し（規約10）、そのフレームの音は srcPos より
         // 1ホップ手前の入力から作られるため。
         //
-        // 実測（正解の補正カーブを直接与えて残差を測定, 48kHz）:
-        //   offset   0 → 22.5 cent 残る
-        //   offset -512 → 10.2 cent（最小）
-        //   offset -1024→ 11.3 cent
-        // blockSize を 128/512/1024 と変えても最小は -512 のままだったので、
-        // ズレは blockSize ではなく hop に紐づく。WSOLA でも同じ傾向（-512 が最小）。
+        // 実測（残差RMS, 48kHz）。**助走(preRoll)を入れてから測り直した値。**
+        //   offset -1024 → 24.6 cent
+        //   offset  -512 → 11.7 cent
+        //   offset     0 →  5.2 cent（最小・既定）
+        //   offset  +512 → 17.3 cent
+        // 助走を入れる前は最小が -512 だった（0 で 22.5 cent, -512 で 10.2 cent）。
+        // 位置0より手前から回すようにしたぶん srcPos と出力の対応が1ホップ動いたため。
+        // ここを触るときは必ず測り直すこと。古い表を信じて -512 に戻すと残差が倍になる。
         const std::int64_t rp = (std::int64_t) srcPos - hopComp + opt.ratioOffsetSamples;
         for (int i = 0; i < nn; ++i)
             ratioBlk[(std::size_t) i] =

@@ -58,3 +58,12 @@ TEST_CASE ("cache requests nothing when no backend can render", "[cache]")
     REQUIRE_FALSE (pc.hasPending());
     REQUIRE (pc.pendingCount() == 0);
 }
+
+// NOTE: 「起動時にバックエンドが無く、あとから élastique DLL が設定された場合に
+// 生成可能範囲を取り直す」ケースはここでは検証できない。ElastiqueDirect::isAvailable()
+// は実 DLL を読めたかどうかで決まり、CI には elastique3.dll が無いため偽装できない。
+// 実機では probe で確認済み:
+//   DLL 未設定 → 範囲 1..0（空）・要求 0 件
+//   同じ設定のまま setElastique() 後に configure → 範囲 -39..48・要求 88 件
+// 修正前は後者も 1..0 / 0 件のままだった（問い合わせ条件にバックエンドの有無が
+// 入っていなかったため）。PitchCache.cpp の probedReaperOk / probedElaOk を参照。

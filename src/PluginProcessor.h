@@ -330,8 +330,11 @@ private:
     // 申告値が食い違うと、レイテンシ変更でホストが prepareToPlay を呼び直す
     // → そこでまた違う値を申告 → …と往復し続ける（Ableton Live で実際に起きた）。
     // その間 prepareToPlay が毎回走るので、キャッシュも作っては捨てられ続ける。
+    // **両辺とも APVTS を正として読む。** 以前は useCachePath() が APVTS（state 復元済み）を、
+    // voices.getCurrentLatency() が VoiceManager::engineControl（processBlock でしか更新されない）を
+    // 見ていたため、復元直後の prepareToPlay だけ食い違う値を申告していた。
     int desiredLatency() const noexcept
-    { return useCachePath() ? 0 : voices.getCurrentLatency(); }
+    { return useCachePath() ? 0 : voices.getLatencyFor ((int) pAlgorithm->load()); }
 
     // REAPER Shifter で Natural / Manual のときキャッシュ経路（Varispeed再生）を使う。
     // formant / stretch はキャッシュに焼き込むので可。Sync はテンポ依存で動的なので除外。

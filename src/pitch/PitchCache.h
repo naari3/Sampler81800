@@ -158,8 +158,11 @@ private:
     // REAPER 経路が使えたら true（範囲が取れなくても全域を入れて true）。
     bool queryReaperRange (int mode, int sub, double sampleRate, int& lo, int& hi) const;
 
-    // 範囲を問い合わせ済みのモード（毎tick シフタを作らないため）
-    int probedMode = -999, probedSub = -999, probedElaMode = -999;
+    // 範囲を問い合わせ済みの条件（毎tick シフタを作らないため）。
+    // モード番号だけでなく**バックエンドが使えるかどうか**も持つ。DLL が後から
+    // 読み込まれた／REAPER の attach が後から完了した場合に取り直せなくなるため。
+    int  probedMode = -999, probedSub = -999, probedElaMode = -999;
+    bool probedReaperOk = false, probedElaOk = false;
 
     host::ReaperApi*       api       = nullptr;
     const ElastiqueDirect* elastique = nullptr;

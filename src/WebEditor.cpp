@@ -703,13 +703,17 @@ void OtoMadSamplerWebEditor::timerCallback()
         // SHIFTER 欄の文言は durationMode / stretch でも変わる。これらは上のスカラーに
         // 含まれないので、文字列そのものを比較対象に入れないと更新を取りこぼす。
         const auto  shifter = processor.getShifterStatusText();
+        // 診断文字列も比較に入れる。入れないと ready/pending が動かないまま
+        // 世代だけが上がっている状態（＝まさに切り分けたい状態）で status が飛ばず、
+        // 表示が固まって「世代は止まっている」と誤読させる。
+        const auto  dbg     = processor.getCacheDebugText();
         if (busy == lastBusy && prog == lastProgPct && fb == lastFallback
             && upd == lastUpdateAvail && rmv == lastReaperKey && shifter == lastShifterText
-            && cnt == lastCacheCount)
+            && cnt == lastCacheCount && dbg == lastCacheDebug)
             return;
         lastBusy = busy; lastProgPct = prog; lastFallback = fb;
         lastUpdateAvail = upd; lastReaperKey = rmv; lastShifterText = shifter;
-        lastCacheCount = cnt;
+        lastCacheCount = cnt; lastCacheDebug = dbg;
     }
 
     auto* s = new juce::DynamicObject();

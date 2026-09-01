@@ -37,6 +37,9 @@ public:
     void setEngineControl (const Voice::EngineControl& c) noexcept { engineControl = c; }
     bool isFallbackActive() const noexcept { return voices[0].isFallbackActive(); }
     int  getCurrentLatency() const noexcept { return voices[0].getReportedLatency (engineControl.algorithm); }
+    // 指定アルゴリズムの申告レイテンシ。engineControl は processBlock でしか更新されないので、
+    // prepareToPlay の時点では前回の値のまま。APVTS を正として問い合わせたいとき用。
+    int  getLatencyFor (int algorithm) const noexcept { return voices[0].getReportedLatency (algorithm); }
     void reconfigureReaper (int mode, int submode) { for (auto& v : voices) v.reconfigureReaper (mode, submode); }
 
     // GUI表示用（voice0 から）
