@@ -42,7 +42,7 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
     for (auto& p : ready) p.store (nullptr, std::memory_order_release);
-    reqLo.store (0); reqHi.store (0);
+    for (auto& w : req) w.store (0);
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
     curFormant = fq; curTimeRatio = tq; curStart = sq; curEnd = eq; curElaMode = elaMode;
@@ -54,25 +54,22 @@ bool PitchCache::renderPending()
 {
     int semi = 0; bool found = false;
     {
-        // 保留ビットを1つ「原子的に」取り出す（複数背景スレッドが同じ半音を二重処理しないように、
+        // 保留ビットを1つ「原子的に」取り出す（複数背景スレッドが同じ半音を二重処理しないよう、
         // fetch_and の戻り値で自分がクリアした場合だけ確定する）。
-        for (int b = 0; b < 64 && ! found; ++b)
+        for (int w = 0; w < kWords && ! found; ++w)
         {
-            const std::uint64_t mask = 1ull << b;
-            if (reqLo.load() & mask)
+            for (int b = 0; b < 64 && ! found; ++b)
             {
-                if (reqLo.fetch_and (~mask) & mask) { semi = kMin + b; found = true; }
-            }
-        }
-        for (int b = 0; b < (kN - 64) && ! found; ++b)
-        {
-            const std::uint64_t mask = 1ull << b;
-            if (reqHi.load() & mask)
-            {
-                if (reqHi.fetch_and (~mask) & mask) { semi = kMin + 64 + b; found = true; }
+                const int idx = w * 64 + b;
+                if (idx >= kN) break;
+                const std::uint64_t mask = 1ull << b;
+                if ((req[(std::size_t) w].load() & mask) == 0) continue;
+                if (req[(std::size_t) w].fetch_and (~mask) & mask)
+                { semi = kMin + idx; found = true; }
             }
         }
     }
+
     if (! found)
         return false;
 

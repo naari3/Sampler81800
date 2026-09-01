@@ -22,8 +22,10 @@ public:
     void prepare (const PitchEngineContext&, EngineResources&) override;
     void reset() override;
 
-    int  getIntrinsicLatency() const override { return N; }
-    int  getTailSamples()      const override { return N; }
+    // 実測: ピッチ比 0.5 で 433、比 1.0 で 0、比 2.0 で -706。
+    // N(2048) は過大（WsolaEngine.h の注記も参照）。最悪値を覆う hop 1つ分にする。
+    int  getIntrinsicLatency() const override { return hop; }
+    int  getTailSamples()      const override { return N; }   // テールは流し切る長さ
     bool preservesDuration()   const override { return true; }
     bool supportsFormant()     const override { return true; }
     void setFormantShift (float semitones) override { formantSemi = semitones; }

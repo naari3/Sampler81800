@@ -56,7 +56,8 @@ inline const HelpEntry* helpTable (std::size_t& count) noexcept
         { reaperSubMode, "選択したモードのサブモード" },
         // Web UI で追加されたもの（ネイティブ版には無い）
         { elastiqueMode, "REAPER 外で elastique を直読みするときのアルゴリズム。"
-                         "Elastique Pro は多声OK、Soloist は単声専用" },
+                         "通常は Elastique Pro。Soloist は単声専用で、"
+                         "シフトすると倍音がほとんど落ちて音が籠る" },
         { vibDepth,      "ビブラートの深さ（セント）。0 で無効" },
         { vibRate,       "ビブラートの速さ" },
         { vibDelay,      "発音してからビブラートが効き始めるまでの時間" },

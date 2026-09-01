@@ -732,7 +732,10 @@ void OtoMadSamplerProcessor::serviceCache()
                           pSampleStart->load(), pSampleEnd->load(),
                           (int) pElastiqueMode->load());
 
-    // 設定確定時にプリウォーム: 現在の pitchSemi を中心に ±48 半音（全域）をまとめて背景生成（停止中に貯める）
+    // 設定確定時にプリウォーム: 現在の pitchSemi + octave を中心に ±48 半音をまとめて背景生成
+    // （停止中に貯める）。キャッシュ自体は ±96 まで持てるが、全部先読みすると
+    // 0.5秒ステレオで約37MBになるので窓は ±48 のまま。**窓は移調量に追従する**ので、
+    // オクターブを下げれば -96 側も先読みされる。窓の外は初回発音時にオンデマンドで入る。
     if (changed && useCachePath())
     {
         const int c = (int) pPitchSemi->load() + 12 * (int) pOctave->load();

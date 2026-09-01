@@ -21,11 +21,13 @@ void Voice::prepare (double sr, int maxBlock, int numChannels,
     ratioBuf.assign ((std::size_t) preparedBlock, 1.0f);
 
     const PitchEngineContext ctx { sr, preparedBlock, preparedChannels };
-    varispeed.prepare (ctx, resources);
-    wsola.prepare (ctx, resources);
-    phaseVocoder.prepare (ctx, resources);
-    reaper.setReaperApi (reaperApi);
-    reaper.prepare (ctx, resources);   // 非REAPERなら isAvailable()==false のまま
+    reaper.setReaperApi (reaperApi);   // prepare より前（非REAPERなら isAvailable()==false のまま）
+
+    // **個別に呼ばない。** 一覧を回すことで、エンジンを足したときの prepare 登録漏れを防ぐ。
+    // 実際 Granular / StretchLib を追加したとき漏らして、選ぶと未初期化のまま再生して落ちた。
+    for (auto* e : allEngines)
+        e->prepare (ctx, resources);
+
     activeEngine = &varispeed;
 
     adsr.setSampleRate (sr);
@@ -55,21 +57,34 @@ void Voice::setPortamentoConfig (PortamentoGenerator::Shape shape, float timeMs,
     porta.setCurve (curve);
 }
 
-IPitchEngine* Voice::pickEngine (int algorithm) noexcept
+// algorithm 番号 → エンジン実体。**対応を知っているのはここだけ**にする。
+// pickEngine と getReportedLatency の両方がこれを使うので、片方だけ更新して
+// 食い違う（＝報告レイテンシと実体がズレる）事故が起きない。
+IPitchEngine* Voice::engineForAlgorithm (int algorithm) noexcept
 {
     switch (algorithm)
     {
-        case 0: fallbackActive = false; return &varispeed;
-        case 1: fallbackActive = false; return &wsola;
-        case 2: fallbackActive = false; return &phaseVocoder;
-        case 3: fallbackActive = false; return &granular;
-        case 4: fallbackActive = false; return &stretchLib;
-        case 5:                         // REAPER Shifter: REAPER上でのみ実動作
-            if (reaper.isAvailable()) { fallbackActive = false; return &reaper; }
-            fallbackActive = true;    return &phaseVocoder;   // 規約2: 代替(PV)へ
-        default:                        // 想定外の値 → 規約2（無音を返さない）
-            fallbackActive = true;    return &phaseVocoder;
+        case 0: return &varispeed;
+        case 1: return &wsola;
+        case 2: return &phaseVocoder;
+        // Granular / StretchLib は v0.4.2 時点で**プラグイン上だと無音になる**問題があるため
+        // 一時的に無効化する（nullptr → 呼び出し側が Phase Vocoder へフォールバック, 規約15）。
+        // **選択肢自体は消さない。** AudioParameterChoice は正規化値で保存されるので、
+        // リストから抜くと REAPER Shifter が index 5→3 にずれ、既存プロジェクトの
+        // アルゴリズム選択が別物に化ける（規約12: 選択肢は縮小しない）。
+        // 原因が分かったらここを元に戻すだけでよい。エンジン本体とテストは残してある。
+        case 3: return nullptr;   // Granular（無効化中）
+        case 4: return nullptr;   // Stretch Library（無効化中）
+        case 5: return reaper.isAvailable() ? &reaper : nullptr;   // REAPER上でのみ実動作
+        default: return nullptr;
     }
+}
+
+IPitchEngine* Voice::pickEngine (int algorithm) noexcept
+{
+    auto* e = engineForAlgorithm (algorithm);
+    fallbackActive = (e == nullptr);
+    return e != nullptr ? e : &phaseVocoder;   // 規約15: 無音を返さず代替(PV)へ
 }
 
 void Voice::setEngineControl (const EngineControl& c) noexcept
@@ -303,19 +318,10 @@ void Voice::render (float* const* out, int numChannels, int n) noexcept
 
 int Voice::getReportedLatency (int algorithm) const noexcept
 {
-    switch (algorithm)
-    {
-        case 0: return varispeed.getIntrinsicLatency();        // 0（生演奏で低遅延）
-        case 1: return wsola.getIntrinsicLatency();
-        case 2: return phaseVocoder.getIntrinsicLatency();
-        case 3: return granular.getIntrinsicLatency();
-        // StretchLib は STFT ブロックが 120ms と大きく、他エンジンより桁違いに遅い
-        // （48kHz で 5000サンプル超）。ここを PV の値のままにすると発音がズレる。
-        case 4: return stretchLib.getIntrinsicLatency();
-        case 5: return reaper.isAvailable() ? reaper.getIntrinsicLatency()
-                                            : phaseVocoder.getIntrinsicLatency();
-        default: return phaseVocoder.getIntrinsicLatency();    // 想定外の値 → PV フォールバック
-    }
+    // pickEngine と同じ対応表を使う。ここだけ別に書くと、実際に鳴るエンジンと
+    // 報告するレイテンシが食い違って発音タイミングがズレる（実際にやらかした）。
+    const auto* e = const_cast<Voice*> (this)->engineForAlgorithm (algorithm);
+    return (e != nullptr ? e : &phaseVocoder)->getIntrinsicLatency();
 }
 
 } // namespace otomad

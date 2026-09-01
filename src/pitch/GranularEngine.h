@@ -38,8 +38,10 @@ public:
     void prepare (const PitchEngineContext&, EngineResources&) override;
     void reset() override;
 
-    int  getIntrinsicLatency() const override { return frame; }
-    int  getTailSamples()      const override { return frame; }
+    // 実測: ピッチ比 0.5 で 262、比 1.0 で -77、比 2.0 で -738。
+    // frame(1024) は過大。最悪値を覆う hop 1つ分にする。
+    int  getIntrinsicLatency() const override { return hop; }
+    int  getTailSamples()      const override { return frame; }   // テールは流し切る長さ
     bool preservesDuration()   const override { return true; }
 
     void process (SourceReader& src, double& srcPos,

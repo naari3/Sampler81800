@@ -33,7 +33,12 @@ namespace host { class ReaperApi; }
 class PitchCache
 {
 public:
-    static constexpr int kMin = -48, kMax = 48, kN = kMax - kMin + 1;
+    // ルートからの相対半音。octave(±4=±48半音) と pitchSemi(±48) を併用すると
+    // ±48 では足りずクランプされ、その先は Varispeed が上乗せされて音色・長さが変わる。
+    // ±96 まで持てばその併用でも素の再生が届く。
+    static constexpr int kMin = -96, kMax = 96, kN = kMax - kMin + 1;
+    // 要求ビットは範囲から語数を導く（範囲を広げたときに足りなくなるのを防ぐ）
+    static constexpr int kWords = (kN + 63) / 64;
 
     void setApi (host::ReaperApi* a) noexcept { api = a; }
     // REAPER 外での代替バックエンド（実験機能）。null なら従来どおり REAPER 上でのみ動く。
@@ -49,7 +54,7 @@ public:
     {
         if (semi < kMin || semi > kMax) return;
         const int bit = semi - kMin;
-        (bit < 64 ? reqLo : reqHi).fetch_or (1ull << (bit & 63), std::memory_order_release);
+        req[(std::size_t) (bit >> 6)].fetch_or (1ull << (bit & 63), std::memory_order_release);
     }
     // プリウォーム: 未生成の音程域をまとめてリクエスト（停止中に背景で貯める）。
     void requestRange (int lo, int hi) noexcept
@@ -70,7 +75,10 @@ public:
                     double sampleRate, float formant, double timeRatio,
                     float start01, float end01, int elaMode);
     bool hasPending() const noexcept
-    { return reqLo.load() != 0 || reqHi.load() != 0; }
+    {
+        for (auto& w : req) if (w.load() != 0) return true;
+        return false;
+    }
 
     // --- 進捗（UI用・任意スレッドから読み取り可, atomicのみ） ---
     // 生成済み半音数（ready 非null の数）。
@@ -82,7 +90,11 @@ public:
     }
     // 残り生成待ち半音数（リクエストビットの立っている数）。
     int pendingCount() const noexcept
-    { return std::popcount (reqLo.load()) + std::popcount (reqHi.load()); }
+    {
+        int n = 0;
+        for (auto& w : req) n += std::popcount (w.load());
+        return n;
+    }
 
     // --- 背景スレッド ---
     // 保留中の半音を1つレンダリングして公開する。やることがあれば true。
@@ -95,7 +107,7 @@ private:
     const ElastiqueDirect* elastique = nullptr;
 
     std::array<std::atomic<const SampleBuffer*>, (std::size_t) kN> ready {};
-    std::atomic<std::uint64_t> reqLo { 0 }, reqHi { 0 };
+    std::array<std::atomic<std::uint64_t>, (std::size_t) kWords> req {};
 
     std::mutex ownerLock;                 // 背景/メッセージ用（音声スレッドは触らない）
     const SampleBuffer* curSrc = nullptr;

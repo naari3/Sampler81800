@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -142,6 +143,19 @@ private:
     ReaperPitchShiftEngine reaper;
     IPitchEngine*          activeEngine = &varispeed;
     bool                   fallbackActive = false;
+
+    // エンジンを1つ追加すると触る場所が「生成」「prepare」「algorithm→実体の対応」と
+    // 分散しがちで、実際に prepare の登録漏れ（＝未初期化のまま再生してクラッシュ）と
+    // レイテンシ報告漏れを起こした。**対応表と一覧をここに集約する。**
+    //
+    // - lifecycle（prepare/reset）は allEngines を回す
+    // - algorithm → 実体 は engineForAlgorithm() だけが知る
+    //   （pickEngine と getReportedLatency の両方がこれを使う）
+    std::array<IPitchEngine*, 6> allEngines
+        { &varispeed, &wsola, &phaseVocoder, &granular, &stretchLib, &reaper };
+
+    // algorithm 番号に対応するエンジン。未実装／使用不可なら nullptr（呼び出し側が PV へ）。
+    IPitchEngine* engineForAlgorithm (int algorithm) noexcept;
 
     juce::ADSR          adsr;
     juce::ADSR::Parameters adsrParams;

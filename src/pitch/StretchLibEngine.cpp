@@ -23,7 +23,21 @@ void StretchLibEngine::prepare (const PitchEngineContext& ctx, EngineResources&)
     prepCh   = 2;
     maxBlock = std::max (64, ctx.maxBlockSize);
 
-    impl->stretch.presetDefault (prepCh, (float) ctx.sampleRate);
+    // presetDefault は blockSamples = 0.12*sr（48kHz で 5760 = 120ms）で、レイテンシが
+    // そのまま 120ms になり演奏用途には大きすぎる。ブロック長を直接指定して詰める。
+    // 実測（レイテンシはブロック長に比例し、報告値は常に実体と一致した）。
+    // ピッチ誤差は**単調ではない**ので、短くするほど悪化すると決めつけないこと:
+    //   block  レイテンシ   +7半音の誤差(等倍/2倍長)
+    //   0.12    120ms       +0.0 / +1.0
+    //   0.10    100ms       +2.2 / +5.4
+    //   0.08     80ms       +4.9 / +6.4
+    //   0.06     60ms       -0.9 / -0.3   ← 採用
+    //   0.05     50ms       +8.1 / +10.4
+    // -12〜+12半音で確認しても 0.06 は 0.12 と同等（最悪 8.3ct vs 7.2ct）。
+    // レイテンシだけ半分にできるのでここを使う。0.05 へ詰めると精度が落ちるので下げない。
+    impl->stretch.configure (prepCh,
+                             (int) (ctx.sampleRate * 0.06),     // block   → 60ms
+                             (int) (ctx.sampleRate * 0.015));   // interval
     latency = impl->stretch.inputLatency() + impl->stretch.outputLatency();
 
     // timeRatio は Manual(0.25..4x) と Sync でかなり動く。1ブロックあたりの入力は

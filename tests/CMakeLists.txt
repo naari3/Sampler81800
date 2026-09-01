@@ -22,9 +22,13 @@ add_executable(otomad_tests
     test_granular.cpp
     test_stretchlib.cpp
     test_samplerate.cpp
+    test_voice_engines.cpp
     test_vibrato.cpp
     test_pitchflatten.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/Voice.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/ReaperPitchShiftEngine.cpp
+    ${CMAKE_SOURCE_DIR}/src/host/ReaperApi.cpp
     ${CMAKE_SOURCE_DIR}/src/core/PortamentoGenerator.cpp
     ${CMAKE_SOURCE_DIR}/src/core/GlideMatcher.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SampleLoader.cpp
@@ -43,7 +47,8 @@ target_compile_features(otomad_tests PRIVATE cxx_std_20)
 target_compile_options(otomad_tests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 # SampleLoader::rebuildFromOriginal（SR変換）を検証するので JUCE が要る。
 target_link_libraries(otomad_tests PRIVATE Catch2::Catch2WithMain signalsmith-stretch
-                                          juce::juce_audio_formats)
+                                          juce::juce_audio_formats
+                                          juce::juce_vst3_headers)
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(CTest)

@@ -286,6 +286,17 @@ import ("./juce-index.js").then ((juce) => {
     dimEl (document.getElementById ("sel-syncLength"), dur === 1);   // Sync 長は Duration=Sync のみ
     dimEl (document.getElementById ("chk-phaseLock"),  isPV);        // Phase Lock は Phase Vocoder のみ
 
+    // Granular / Stretch Library は無音になる問題で一時的に無効。
+    // 選択肢は state 互換のため残してあるので、UI 側で選べなくする。
+    const selAlgo = document.getElementById ("sel-algorithm");
+    if (selAlgo && selAlgo.options.length >= 5) {
+      for (const i of [3, 4]) {
+        selAlgo.options[i].disabled = true;
+        if (! /（無効）$/.test (selAlgo.options[i].textContent))
+          selAlgo.options[i].textContent += "（無効）";
+      }
+    }
+
     const rc = isReaper && reaperAvailable;
     dimEl (selRMode, rc); dimEl (selRSub, rc);
     // elastique 直読みのモードは「REAPER Shifter 選択中 かつ REAPER 外 かつ DLL 済み」でだけ意味を持つ

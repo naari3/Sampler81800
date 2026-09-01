@@ -21,7 +21,12 @@ public:
     void prepare (const PitchEngineContext&, EngineResources&) override;
     void reset() override;
 
-    int  getIntrinsicLatency() const override { return frame; }
+    // 実測（無音→バーストの立ち上がりで測定, 48kHz）: ピッチ比 0.5 で最大 1199、
+    // 比 1.0 で 480、比 2.0 では -465（先読みするので負にもなる）。
+    // frame(2048) を報告するのは過大で、その分エンベロープの整列も遅れて
+    // 「音の出だしが遅い」と感じる原因になる。最悪値を覆う hop の倍数にする。
+    int  getIntrinsicLatency() const override { return hop * 3; }
+    // テールは内部バッファを流し切る長さなので frame のまま（レイテンシとは別物）。
     int  getTailSamples()      const override { return frame; }
     bool preservesDuration()   const override { return true; }
 
