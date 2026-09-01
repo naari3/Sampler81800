@@ -222,6 +222,10 @@ public:
     juce::StringArray getReaperSubModeNames (int mode) const;
 
 private:
+    // プリウォーム済みかどうか（serviceCache 専用＝メッセージスレッドのみ）。
+    // configure の戻り値だけでは algorithm / 移調量の変化を拾えないので別に持つ。
+    bool prewarmDone   = false;
+    int  prewarmCentre = 0;
     //==========================================================================
     void timerCallback() override { serviceCache(); }   // UI非依存でキャッシュ駆動
 

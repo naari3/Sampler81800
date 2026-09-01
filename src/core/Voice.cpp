@@ -152,6 +152,15 @@ void Voice::startNote (const Pending& p) noexcept
 
     adsr.setParameters (adsrParams);
 
+    // **エンジンをここで選び直す。** useVarispeed はノートごとに決まる（キャッシュ経路か
+    // フォールバックか）が、setEngineControl はホストの processBlock 冒頭でしか来ないので、
+    // 選び直さないとこの音だけ前の設定のまま鳴る。
+    // 具体的には、REAPER Shifter を非REAPERホストで使うと activeEngine が
+    // フォールバック先の Phase Vocoder になっており、キャッシュ再生の1音目が
+    // PV で鳴ってエンベロープも PV のレイテンシぶん遅れる（＝頭が欠ける）。
+    activeEngine = useVarispeed ? static_cast<IPitchEngine*> (&varispeed)
+                                : pickEngine (control.algorithm);
+
     // エンベロープ開始をエンジンのレイテンシ分だけ遅らせる（音の出力遅延と揃える）
     const int lat = activeEngine ? activeEngine->getIntrinsicLatency() : 0;
 

@@ -148,3 +148,58 @@ TEST_CASE ("switching algorithms mid-note does not crash", "[voice][engines]")
         }
     }
 }
+
+TEST_CASE ("cached playback uses varispeed from the very first note", "[voice][engines]")
+{
+    // ホストは 1ブロックの中で「updateVoiceParams → MIDIイベント処理 → レンダリング」
+    // の順に進む。つまり setEngineControl は**発音より前**にしか来ない。
+    //
+    // キャッシュ経路（REAPER Shifter が事前レンダした素材を Varispeed で読む）では
+    // noteOn の時点で初めて useVarispeed が true になるが、startNote が activeEngine を
+    // 選び直していないと、その音は直前の設定＝REAPER Shifter のフォールバック先である
+    // Phase Vocoder のまま鳴り始める。エンベロープも PV のレイテンシぶん遅らされるので、
+    // プラグインを読み込んだ直後の音だけ頭が欠けて聞こえる。
+    EngineResources res;
+    res.prepare (SR);
+    auto src = test::makeSine (440.0, SR, 1.0);
+
+    auto renderFirstBlock = [&res, &src] (bool refreshAfterNoteOn)
+    {
+        Voice v;
+        v.prepare (SR, BLOCK, 1, res, nullptr);
+
+        Voice::Params p;
+        p.rootKey = 60;
+        p.gainLin = 1.0f;
+        v.setParams (p);
+        v.setAdsr (0.001f, 0.010f, 1.0f, 0.010f);
+
+        Voice::EngineControl ec;
+        ec.algorithm    = 5;   // REAPER Shifter（非REAPERホスト → PV へフォールバック）
+        ec.durationMode = 0;
+        v.setEngineControl (ec);
+
+        v.noteOn (&src, 60, 0.9f, 0.0f, 1.0f, false, false, 60.0f, /*useVarispeed*/ true, 0.0f);
+        if (refreshAfterNoteOn)
+            v.setEngineControl (ec);   // 次のブロックで来る更新（＝2音目以降の状態）
+
+        std::vector<float> out ((std::size_t) BLOCK, 0.0f);
+        float* ptrs[1] = { out.data() };
+        v.render (ptrs, 1, BLOCK);
+        return out;
+    };
+
+    const auto first = renderFirstBlock (false);   // 読み込み直後の1音目
+    const auto warm  = renderFirstBlock (true);    // 2音目以降と同じ状態
+
+    double peak = 0.0;
+    for (float s : first) peak = std::max (peak, (double) std::abs (s));
+    REQUIRE (peak > 0.01);   // 頭が無音になっていない
+
+    // 1音目と2音目以降で音が変わってはいけない
+    for (std::size_t i = 0; i < first.size(); ++i)
+    {
+        INFO ("sample " << i);
+        REQUIRE (std::abs (first[i] - warm[i]) < 1.0e-6f);
+    }
+}

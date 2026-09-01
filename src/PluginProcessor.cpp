@@ -732,14 +732,27 @@ void OtoMadSamplerProcessor::serviceCache()
                           pSampleStart->load(), pSampleEnd->load(),
                           (int) pElastiqueMode->load());
 
-    // 設定確定時にプリウォーム: 現在の pitchSemi + octave を中心に ±48 半音をまとめて背景生成
+    // プリウォーム: 現在の pitchSemi + octave を中心に ±48 半音をまとめて背景生成
     // （停止中に貯める）。キャッシュ自体は ±96 まで持てるが、全部先読みすると
-    // 0.5秒ステレオで約37MBになるので窓は ±48 のまま。**窓は移調量に追従する**ので、
-    // オクターブを下げれば -96 側も先読みされる。窓の外は初回発音時にオンデマンドで入る。
-    if (changed && useCachePath())
+    // 0.5秒ステレオで約37MBになるので窓は ±48 のまま。窓の外は初回発音時にオンデマンドで入る。
+    //
+    // **`changed` だけを条件にしてはいけない。** configure が見ているのは素材/モード/SR等で、
+    // **algorithm も移調量も含まれていない**。プロジェクトを開き直したとき、状態復元より前の
+    // タイマー1発目で changed==true を消費してしまうと（そのときはまだ既定の Varispeed なので
+    // useCachePath()==false）、以後 configure は false を返し続け、先読みが永久に走らない。
+    // その結果どの音もキャッシュミスになり、REAPER Shifter を選んでいるのに全部
+    // Varispeed で鳴る（＝アルゴリズムを選び直すまで音がおかしい）。
+    // 経路に入った瞬間と移調量が動いたときにも貼り直す。requestRange は ready 済みを
+    // 飛ばすので、貼り直しても余計なレンダリングは起きない。
+    const bool cachePath = useCachePath();
+    const int  centre    = (int) pPitchSemi->load() + 12 * (int) pOctave->load();
+    if (changed || ! cachePath || centre != prewarmCentre)
+        prewarmDone = false;
+    if (cachePath && ! prewarmDone)
     {
-        const int c = (int) pPitchSemi->load() + 12 * (int) pOctave->load();
-        pitchCache.requestRange (c - 48, c + 48);
+        prewarmDone   = true;
+        prewarmCentre = centre;
+        pitchCache.requestRange (centre - 48, centre + 48);
     }
 
     // 保留中の音程があれば背景スレッドで並列レンダリング。cacheThreads 本まで稼働数を補充する。
