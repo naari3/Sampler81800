@@ -170,6 +170,16 @@ public:
     // 分母が異常なのかを切り分けられない。実数で出して不具合報告をそのまま使えるようにする。
     int   getCacheReadyCount()   const noexcept { return pitchCache.readyCount(); }
     int   getCachePendingCount() const noexcept { return pitchCache.pendingCount(); }
+    // 診断用: 設定世代・直近の変化理由・稼働中の背景ジョブ数・作れなかった音程数。
+    // 「0% から動かない」ときに、結果が捨てられているのかジョブが回っていないのかを
+    // 推測せずに切り分けるために出す。
+    juce::String getCacheDebugText() const
+    {
+        return juce::String (pitchCache.generation())
+             + " " + juce::String (otomad::PitchCache::changedName (pitchCache.lastChange()))
+             + " j" + juce::String (cacheJobsActive.load())
+             + " x" + juce::String (pitchCache.failedCount());
+    }
     float getCacheProgress() const noexcept
     {
         if (! useCachePath()) return 1.0f;

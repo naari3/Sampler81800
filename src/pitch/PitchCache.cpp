@@ -94,20 +94,34 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     }
 
     std::lock_guard<std::mutex> lock (ownerLock);
-    if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
-        && std::abs (sampleRate - curSr) < 1.0e-6
-        && std::abs (fq - curFormant) < 1.0e-6 && std::abs (tq - curTimeRatio) < 1.0e-6
-        && std::abs (sq - curStart) < 1.0e-6 && std::abs (eq - curEnd) < 1.0e-6
-        && elaMode == curElaMode)
+
+    // どのフィールドで変化と判定したかを記録する。世代が進み続けて
+    // レンダリング結果が毎回捨てられる不具合を、推測せずに特定するため。
+    Changed why = Changed::None;
+    if      (src        != curSrc)                          why = Changed::Src;
+    else if (version    != curVersion)                      why = Changed::Version;
+    else if (mode       != curMode)                         why = Changed::Mode;
+    else if (sub        != curSub)                          why = Changed::Sub;
+    else if (std::abs (sampleRate - curSr)   >= 1.0e-6)     why = Changed::SampleRate;
+    else if (std::abs (fq - curFormant)      >= 1.0e-6)     why = Changed::Formant;
+    else if (std::abs (tq - curTimeRatio)    >= 1.0e-6)     why = Changed::TimeRatio;
+    else if (std::abs (sq - curStart)        >= 1.0e-6)     why = Changed::Start;
+    else if (std::abs (eq - curEnd)          >= 1.0e-6)     why = Changed::End;
+    else if (elaMode    != curElaMode)                      why = Changed::ElaMode;
+
+    if (why == Changed::None)
         return false;
+    changeReason.store (why, std::memory_order_relaxed);
 
     // 無効化: 新しい ready のみクリア。古いバッファは再生中の可能性があるので解放しない（graveyard保持）。
     for (auto& p : ready) p.store (nullptr, std::memory_order_release);
-    for (auto& w : req) w.store (0);
+    for (auto& w : req)    w.store (0);
+    for (auto& w : failed) w.store (0);   // 設定が変わったら失敗記録もやり直す
 
     curSrc = src; curVersion = version; curMode = mode; curSub = sub; curSr = sampleRate;
     curFormant = fq; curTimeRatio = tq; curStart = sq; curEnd = eq; curElaMode = elaMode;
     ++curGen;   // 設定が変わった → 進行中のレンダリングは無効化される
+    gen.store (curGen, std::memory_order_relaxed);
     return true;
 }
 
@@ -135,13 +149,23 @@ bool PitchCache::renderPending()
         return false;
 
     int usedGen = -1;
-    if (auto buf = renderShift (semi, usedGen))
+    auto buf = renderShift (semi, usedGen);
     {
         std::lock_guard<std::mutex> lock (ownerLock);
         if (usedGen == curGen)   // レンダリング中に設定(素材/モード/フォルマント/ストレッチ)が変わっていなければ公開
         {
-            graveyard.push_back (buf);
-            ready[(std::size_t) (semi - kMin)].store (buf.get(), std::memory_order_release);
+            if (buf != nullptr)
+            {
+                graveyard.push_back (buf);
+                ready[(std::size_t) (semi - kMin)].store (buf.get(), std::memory_order_release);
+            }
+            else
+            {
+                // この設定では作れなかった → 記録して再要求されないようにする。
+                // 記録しないと「要求→空→また要求」を無限に回して進捗が動かなくなる。
+                const int bit = semi - kMin;
+                failed[(std::size_t) (bit >> 6)].fetch_or (1ull << (bit & 63), std::memory_order_release);
+            }
         }
     }
     return true;

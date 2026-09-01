@@ -61,7 +61,44 @@ public:
          || semi > reqHi.load (std::memory_order_relaxed)) return;
         if (semi < kMin || semi > kMax) return;
         const int bit = semi - kMin;
+        // 一度作れなかった音程は再要求しない。範囲内でもバックエンドが空を返すことは
+        // あり（モード依存の制約など）、そのたびに要求し直すと ready にならないまま
+        // 「要求→空→また要求」を無限に回して進捗が 0 から動かなくなる。
+        // 設定が変われば configure がマスクごとクリアするので、やり直しは効く。
+        if (failed[(std::size_t) (bit >> 6)].load (std::memory_order_acquire) & (1ull << (bit & 63)))
+            return;
         req[(std::size_t) (bit >> 6)].fetch_or (1ull << (bit & 63), std::memory_order_release);
+    }
+
+    // 診断用: 設定世代。これが上がり続けているならレンダリング結果が毎回捨てられている。
+    int generation() const noexcept { return gen.load (std::memory_order_relaxed); }
+    // 診断用: 直近で「設定が変わった」と判定した理由。世代が進み続けるときに
+    // どのフィールドが暴れているのかを一発で特定するためのもの。
+    enum class Changed { None, Src, Version, Mode, Sub, SampleRate, Formant, TimeRatio, Start, End, ElaMode };
+    Changed lastChange() const noexcept { return changeReason.load (std::memory_order_relaxed); }
+    static const char* changedName (Changed c) noexcept
+    {
+        switch (c)
+        {
+            case Changed::Src:        return "src";
+            case Changed::Version:    return "ver";
+            case Changed::Mode:       return "mode";
+            case Changed::Sub:        return "sub";
+            case Changed::SampleRate: return "sr";
+            case Changed::Formant:    return "formant";
+            case Changed::TimeRatio:  return "stretch";
+            case Changed::Start:      return "start";
+            case Changed::End:        return "end";
+            case Changed::ElaMode:    return "elamode";
+            default:                  return "-";
+        }
+    }
+    // 診断用: 作れなかった音程の数。
+    int failedCount() const noexcept
+    {
+        int n = 0;
+        for (auto& w : failed) n += std::popcount (w.load());
+        return n;
     }
 
     // いま実際に生成できる半音範囲（configure が更新する。UI/プリウォームの参照用）。
@@ -131,6 +168,11 @@ private:
 
     std::array<std::atomic<const SampleBuffer*>, (std::size_t) kN> ready {};
     std::array<std::atomic<std::uint64_t>, (std::size_t) kWords> req {};
+    // 作れなかった音程（再要求しないための記録）。configure でクリアする。
+    std::array<std::atomic<std::uint64_t>, (std::size_t) kWords> failed {};
+    // 設定世代のミラー（curGen は ownerLock 下でしか読めないので診断用に atomic で持つ）
+    std::atomic<int> gen { 0 };
+    std::atomic<Changed> changeReason { Changed::None };
 
     std::mutex ownerLock;                 // 背景/メッセージ用（音声スレッドは触らない）
     const SampleBuffer* curSrc = nullptr;

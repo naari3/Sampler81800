@@ -690,14 +690,17 @@ void OtoMadSamplerWebEditor::timerCallback()
         const bool  fb   = processor.isEngineFallbackActive();
         const bool  upd  = processor.isUpdateAvailable();
         const int   rmv  = lastReaperMode * 1000 + lastReaperSubMode;
+        const int   cnt  = processor.getCacheReadyCount() * 1000 + processor.getCachePendingCount();
         // SHIFTER 欄の文言は durationMode / stretch でも変わる。これらは上のスカラーに
         // 含まれないので、文字列そのものを比較対象に入れないと更新を取りこぼす。
         const auto  shifter = processor.getShifterStatusText();
         if (busy == lastBusy && prog == lastProgPct && fb == lastFallback
-            && upd == lastUpdateAvail && rmv == lastReaperKey && shifter == lastShifterText)
+            && upd == lastUpdateAvail && rmv == lastReaperKey && shifter == lastShifterText
+            && cnt == lastCacheCount)
             return;
         lastBusy = busy; lastProgPct = prog; lastFallback = fb;
         lastUpdateAvail = upd; lastReaperKey = rmv; lastShifterText = shifter;
+        lastCacheCount = cnt;
     }
 
     auto* s = new juce::DynamicObject();
@@ -705,6 +708,7 @@ void OtoMadSamplerWebEditor::timerCallback()
     s->setProperty ("cacheProgress", processor.getCacheProgress());
     s->setProperty ("cacheReady",    processor.getCacheReadyCount());
     s->setProperty ("cachePending",  processor.getCachePendingCount());
+    s->setProperty ("cacheDebug",    processor.getCacheDebugText());
     s->setProperty ("reaper",        processor.getShifterStatusText());
     s->setProperty ("elastique",     processor.isElastiqueLoaded());
     s->setProperty ("fallback",      processor.isEngineFallbackActive());

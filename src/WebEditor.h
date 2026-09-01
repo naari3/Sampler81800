@@ -88,6 +88,7 @@ private:
     int lastSampleVersion = -1;   // 波形の再送判定
     int lastAppearanceVersion = -1;   // 外観（色/背景）の再送判定
     int lastReaperMode = -1, lastReaperSubMode = -1;   // モード変更→エンジン再設定の検知
+    int lastCacheCount = -1;                          // ready/pending の変化検知（%が同じでも出す）
     // status イベントの早期棄却用（10Hz で毎回 JSON 化しないため）
     bool lastBusy = false, lastFallback = false, lastUpdateAvail = false;
     int  lastProgPct = -1, lastReaperKey = -1;
