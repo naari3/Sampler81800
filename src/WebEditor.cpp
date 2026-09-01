@@ -198,15 +198,24 @@ OtoMadSamplerWebEditor::OtoMadSamplerWebEditor (OtoMadSamplerProcessor& p)
     startTimerHz (10);
 
     // 全パネル（SAMPLE / ENV+PITCH / ENGINE+REAPER / KEYBOARD）が収まる既定サイズ。
-    // 小さすぎると鍵盤が切れるので下限も設ける。
     // 幅が狭いと ENGINE のセレクトが折り返して縦に伸び、鍵盤が切れる。
-    // 折り返さない幅を下限にして、既定は全パネルが収まるサイズにする。
+    // 折り返さない幅を下限にする。
+    //
+    // 高さの内訳（100% スケール時、いずれも実測）:
+    //   上部バー 28 / SAMPLE 190 / AMP ENV+PITCH 180 / ENGINE+REAPER 232
+    //   / KEYBOARD 83（見出し19 + 余白6 + 鍵盤52 + 下余白6）/ パネル間の隙間 24
+    //   / body の上下余白 12  = 合計 約 749
+    // 旧値は下限 660・既定 755 で、下限では鍵盤が確実に切れ、既定でもぎりぎりだった。
+    // 鍵盤が切れない値を下限にし、既定には余裕を持たせる。
+    static constexpr int kMinW = 860, kMinH = 760;
     setResizable (true, true);
-    setResizeLimits (860, 660, 2400, 1600);
+    setResizeLimits (kMinW, kMinH, 2400, 1600);
 
-    // 前回のサイズがあれば復元（無ければ既定）
+    // 前回のサイズがあれば復元（無ければ既定）。
+    // 下限を上げたので、以前の state に入っている小さい高さは既定へ引き上げる
+    // （そのまま渡しても setResizeLimits に丸められるが、意図を明示しておく）。
     const int sw = processor.getEditorW(), sh = processor.getEditorH();
-    setSize (sw >= 860 ? sw : 890, sh >= 660 ? sh : 755);
+    setSize (sw >= kMinW ? sw : 890, sh >= kMinH ? sh : 800);
 }
 
 OtoMadSamplerWebEditor::~OtoMadSamplerWebEditor() { stopTimer(); }

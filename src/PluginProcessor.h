@@ -323,6 +323,16 @@ private:
     void applyBroadcastAppearance (juce::uint32 argb, float opacity, float panelOp,
                                    const juce::MemoryBlock& png);
 
+    // **ホストに申告するレイテンシはここだけが決める。**
+    // prepareToPlay / processBlock / reconfigureReaperMode が別々に式を書いていたため、
+    // キャッシュ経路（実レイテンシ0）なのに prepareToPlay だけが
+    // フォールバック先 Phase Vocoder の値を申告していた。
+    // 申告値が食い違うと、レイテンシ変更でホストが prepareToPlay を呼び直す
+    // → そこでまた違う値を申告 → …と往復し続ける（Ableton Live で実際に起きた）。
+    // その間 prepareToPlay が毎回走るので、キャッシュも作っては捨てられ続ける。
+    int desiredLatency() const noexcept
+    { return useCachePath() ? 0 : voices.getCurrentLatency(); }
+
     // REAPER Shifter で Natural / Manual のときキャッシュ経路（Varispeed再生）を使う。
     // formant / stretch はキャッシュに焼き込むので可。Sync はテンポ依存で動的なので除外。
     bool useCachePath() const noexcept

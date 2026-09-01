@@ -128,7 +128,7 @@ void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     rebuildSamplesForSampleRate (sampleRate);
 
     voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
-    lastReportedLatency = voices.getCurrentLatency();      // 既定(Varispeed)=0
+    lastReportedLatency = desiredLatency();   // processBlock と必ず同じ式で出す
     setLatencySamples (lastReportedLatency);
 
     prepared.store (true);   // ここで state 復元の有無が確定（setStateInformation は prepare より前）
@@ -212,7 +212,7 @@ void OtoMadSamplerProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // レイテンシ報告は processBlock で行わない（規約#1: ロック/ホスト通知が走る。規約#17: 鳴動中に変えない）。
     // 望ましい値だけを atomic で伝え、実際の setLatencySamples はメッセージスレッド側で行う。
-    pendingLatency.store (useCachePath() ? 0 : voices.getCurrentLatency(), std::memory_order_relaxed);
+    pendingLatency.store (desiredLatency(), std::memory_order_relaxed);
 
     // ---- §2.2 : MIDIイベント位置でブロックを分割してレンダリング ----
     int pos = 0;
@@ -777,7 +777,7 @@ void OtoMadSamplerProcessor::reconfigureReaperMode()
     const int sm = (int) pReaperSubMode->load();
     suspendProcessing (true);          // オーディオコールバックを止めてから非RT処理
     voices.reconfigureReaper (m, sm);
-    lastReportedLatency = voices.getCurrentLatency();
+    lastReportedLatency = desiredLatency();
     setLatencySamples (lastReportedLatency);
     suspendProcessing (false);
 }
@@ -976,6 +976,8 @@ void OtoMadSamplerProcessor::rebuildSamplesForSampleRate (double sampleRate)
     if (sampleRate <= 0.0)
         return;
 
+    bool rebuiltAny = false;
+
     const juce::ScopedLock sl (slotLock);
     for (std::size_t i = 0; i < sampleList.size(); ++i)
     {
@@ -1000,9 +1002,14 @@ void OtoMadSamplerProcessor::rebuildSamplesForSampleRate (double sampleRate)
         if (activeIndex.load() == (int) i)
             activeSample.store (next.get());
         sampleList[i] = next;
+        rebuiltAny = true;
     }
 
-    sampleVersion.fetch_add (1);   // ピッチキャッシュを作り直させ、UI も更新させる
+    // **何も作り直していないなら version を上げない。**
+    // prepareToPlay から毎回呼ばれるので、無条件に上げるとホストが再初期化するたびに
+    // ピッチキャッシュが丸ごと無効化され、生成中のものも世代違いで捨てられる。
+    if (rebuiltAny)
+        sampleVersion.fetch_add (1);   // ピッチキャッシュを作り直させ、UI も更新させる
 }
 
 void OtoMadSamplerProcessor::applyFlattenResult (otomad::FlattenResult r, int slot)
