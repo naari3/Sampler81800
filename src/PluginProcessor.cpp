@@ -117,6 +117,15 @@ OtoMadSamplerProcessor::~OtoMadSamplerProcessor()
 void OtoMadSamplerProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     hostSampleRate.store (sampleRate);
+
+    // 再生用バッファ(data)がホストSRと違うSRで作られていたら作り直す（規約16）。
+    // 再生側は data が既にホストSRである前提で読むので、ズレるとそのまま音程が狂う
+    // （44.1k のバッファを 48k で読むと +147cent）。次の2つで実際に食い違う:
+    //   - setStateInformation は prepareToPlay より前に走るため、プロジェクトを開き直すと
+    //     まだ既定値(44100)で data が作られる
+    //   - デバイスSRの変更や、REAPER のレンダリング(エンコード)SR がプレビューと違う場合
+    rebuildSamplesForSampleRate (sampleRate);
+
     voices.prepare (sampleRate, samplesPerBlock, 2, &reaperApi);
     lastReportedLatency = voices.getCurrentLatency();      // 既定(Varispeed)=0
     setLatencySamples (lastReportedLatency);
@@ -885,12 +894,42 @@ void OtoMadSamplerProcessor::flattenActiveSample (float strength)
     });
 }
 
+// 指定SRの data を持つ新しいバッファを作って返す（原音は共有せずコピー）。
+// **data を再リサンプルせず、必ず original から1回だけ変換する**（規約16: 二重変換禁止）。
+// バッファは shared_ptr<const> で不変なので、作り直す = 新しく作って差し替える。
+static std::shared_ptr<otomad::SampleBuffer>
+makeResampledCopy (const otomad::SampleBuffer& cur, double sampleRate)
+{
+    auto next = std::make_shared<otomad::SampleBuffer>();
+    next->numChannels        = cur.numChannels;
+    next->originalSampleRate = cur.originalSampleRate;
+    next->name               = cur.name;
+    next->path               = cur.path;
+    next->original           = cur.original;
+    otomad::SampleLoader::rebuildFromOriginal (*next, sampleRate);
+    return next;
+}
+
+// そのバッファが今のホストSRで作られていなければ true。
+static bool needsRebuildFor (const otomad::SampleBuffer* sb, double sampleRate) noexcept
+{
+    return sb != nullptr && sb->numChannels > 0
+        && ! sb->original.empty() && sb->originalSampleRate > 0.0
+        && std::abs (sb->sampleRate - sampleRate) > 1.0e-6;
+}
+
 // スロットのバッファを差し替える。バッファは不変なので「作り直して入れ替える」。
 // 旧バッファはオーディオスレッドがまだ読んでいる可能性があるので graveyard で寿命を延ばす。
 void OtoMadSamplerProcessor::replaceSlotBuffer (int slot, std::shared_ptr<const otomad::SampleBuffer> next)
 {
     if (next == nullptr)
         return;
+
+    // 入れようとしているバッファが今のホストSRで作られていなければ作り直す。
+    // 例: 平坦化 → SR変更（既存スロットは作り直される）→ UNDO で、
+    // undo 用に取っておいた「SR変更前の」バッファが戻ってきてしまう。
+    if (const double sr = hostSampleRate.load(); needsRebuildFor (next.get(), sr))
+        next = makeResampledCopy (*next, sr);
     {
         const juce::ScopedLock sl (graveyardLock);
         sampleGraveyard.push_back (next);
@@ -910,6 +949,43 @@ void OtoMadSamplerProcessor::replaceSlotBuffer (int slot, std::shared_ptr<const 
         activeSample.store (next.get());
 
     sampleVersion.fetch_add (1);   // ピッチキャッシュ再生成 & UI 更新
+}
+
+// ホストSRが変わったら、原音(original)から data を作り直す。
+// **data を再リサンプルしない**（規約16: 二重変換禁止）。原音は不変なので常にそこから1回だけ変換する。
+// prepareToPlay から呼ばれる＝オーディオは停止中なので、確保とバッファ差し替えを行ってよい。
+void OtoMadSamplerProcessor::rebuildSamplesForSampleRate (double sampleRate)
+{
+    if (sampleRate <= 0.0)
+        return;
+
+    const juce::ScopedLock sl (slotLock);
+    for (std::size_t i = 0; i < sampleList.size(); ++i)
+    {
+        const auto& cur = sampleList[i];
+        if (cur == nullptr || cur->numChannels <= 0
+            || cur->original.empty() || cur->originalSampleRate <= 0.0)
+            continue;
+        if (! needsRebuildFor (cur.get(), sampleRate))
+            continue;                       // 既に正しいSRで作られている
+
+        auto next = makeResampledCopy (*cur, sampleRate);
+
+        {
+            const juce::ScopedLock gl (graveyardLock);
+            sampleGraveyard.push_back (next);
+        }
+        {
+            const juce::ScopedLock fl (flacLock);
+            flacCache.erase (cur.get());   // ポインタキーなので差し替え前に捨てる
+        }
+
+        if (activeIndex.load() == (int) i)
+            activeSample.store (next.get());
+        sampleList[i] = next;
+    }
+
+    sampleVersion.fetch_add (1);   // ピッチキャッシュを作り直させ、UI も更新させる
 }
 
 void OtoMadSamplerProcessor::applyFlattenResult (otomad::FlattenResult r, int slot)

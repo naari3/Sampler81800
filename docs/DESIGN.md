@@ -275,6 +275,21 @@ struct SampleBuffer {
 から一度だけ変換する**。`data` を再リサンプルすると二重変換になり音質が累積劣化する。
 埋め込み保存 (§3.9) も `original` を対象にする。
 
+> **【実装メモ / 過去のバグ】** v0.4.0 まで `prepareToPlay` は新SRを保存するだけで
+> **`data` を作り直していなかった**。再生側は data がホストSRである前提で読む（SR補正なし）ため、
+> 食い違うとその比率がそのまま音程のズレになる（44.1k の data を 48k で読むと **+147 cent**）。
+> 実際に踏んだ経路は2つ:
+>
+> - `setStateInformation` は `prepareToPlay` より**前**に走る。よってプロジェクトを開き直すと
+>   `hostSampleRate` が**既定値 44100 のまま** data が作られ、その後 48k を伝えられても直らない。
+>   「44100Hz でないとピッチがズレる」という報告はこれ。
+> - REAPER のレンダリング(エンコード)SR がプレビューSRと違う場合も同じ。
+>
+> 対策は `prepareToPlay` から `rebuildSamplesForSampleRate()` を呼び、
+> **SRが食い違うスロットだけ** original から作り直すこと。加えて `replaceSlotBuffer()` でも
+> 同じ検査をする（平坦化 → SR変更 → UNDO で、SR変更前のバッファが戻ってくるため）。
+> 回帰テストは `tests/test_samplerate.cpp`。
+
 **外部 ffmpeg によるデコード（同梱しない / ユーザー指定）**
 
 JUCE の `AudioFormatManager` が読めるのは wav/aiff/flac/mp3/ogg まで。ユーザーが

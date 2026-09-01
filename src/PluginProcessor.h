@@ -272,6 +272,8 @@ private:
     void applyFlattenResult (otomad::FlattenResult, int slot);
     // スロットのバッファを差し替える（不要になった側の FLAC キャッシュも捨てる）
     void replaceSlotBuffer (int slot, std::shared_ptr<const otomad::SampleBuffer> next);
+    // ホストSRが変わったら、原音から data を作り直す（規約16）。prepareToPlay から呼ぶ。
+    void rebuildSamplesForSampleRate (double sampleRate);
     otomad::PitchCache      pitchCache;
     std::atomic<int>        cacheJobsActive { 0 };   // 稼働中の背景レンダジョブ数
 
