@@ -398,6 +398,17 @@ private:
     std::atomic<float>* pDurationMode = nullptr;
     std::atomic<float>* pSyncLength  = nullptr;
     std::atomic<float>* pStretch     = nullptr;
+    // FORMANT は UI から外したので、保存されている値があっても音には反映しない。
+    // パラメータ自体は APVTS に残してある（規約12: 個数・レンジをホストや事情で変えない。
+    // 選択肢を削ると既存プロジェクトの state が読めなくなる）。
+    // 使えるようにするときはここを pFormant->load() に戻し、エディタのノブを復活させる。
+    //
+    // 塞いだ理由: REAPER 経路は set_formant_shift に渡す値の扱いが壊れていて
+    // （0.05 以下が全て -1.0 に潰れる＝下方向が効かない）、上方向も効いていないとの報告。
+    // 自前の Phase Vocoder 側は直したが（tests/test_phasevocoder.cpp）、
+    // REAPER 側を検証できるまで両方まとめて出さないでおく。
+    float activeFormantSemi() const noexcept { return 0.0f; }
+
     std::atomic<float>* pFormant     = nullptr;
     std::atomic<float>* pPhaseLock   = nullptr;
     std::atomic<float>* pReaperMode    = nullptr;

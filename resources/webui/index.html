@@ -112,7 +112,9 @@
       </div>
       <div class="knob-row">
         <div class="knob-cell"><div class="knob" data-relay="stretchAmount"></div><div class="knob-label">STRETCH</div><div class="knob-value"></div></div>
-        <div class="knob-cell"><div class="knob" data-relay="formant"></div><div class="knob-label">FORMANT</div><div class="knob-value"></div></div>
+        <!-- FORMANT は UI から外している。パラメータ自体は APVTS に残っているので
+             既存プロジェクトの state はそのまま読める（規約12: 個数・レンジを変えない）。
+             実装が使い物になったら knob-cell を戻すだけでよい。 -->
         <div class="knob-cell"><div class="knob" data-relay="portaCurve"></div><div class="knob-label">CURVE</div><div class="knob-value"></div></div>
         <div class="knob-cell"><div class="knob" data-relay="glideGroupMs"></div><div class="knob-label">GROUP</div><div class="knob-value"></div></div>
       </div>

@@ -180,7 +180,7 @@ void OtoMadSamplerProcessor::updateVoiceParams() noexcept
     ec.syncBeats    = syncBeatsTable[juce::jlimit (0, 4, (int) pSyncLength->load())];
     ec.hostBpm      = hostBpm;
     ec.hostBpmValid = hostBpmValid;
-    ec.formantSemi  = pFormant->load();
+    ec.formantSemi  = activeFormantSemi();   // UI から外している間は常に 0
     ec.phaseLock    = pPhaseLock->load() > 0.5f;
     ec.reaperMode    = (int) pReaperMode->load();
     ec.reaperSubMode = (int) pReaperSubMode->load();
@@ -728,7 +728,7 @@ void OtoMadSamplerProcessor::serviceCache()
     // 素材/モード/フォルマント/ストレッチ/トリム を反映（変わっていれば ready を無効化して作り直す）
     const bool changed = pitchCache.configure (activeSample.load(), sampleVersion.load(),
                           (int) pReaperMode->load(), (int) pReaperSubMode->load(),
-                          hostSampleRate.load(), pFormant->load(), timeRatio,
+                          hostSampleRate.load(), activeFormantSemi(), timeRatio,
                           pSampleStart->load(), pSampleEnd->load(),
                           (int) pElastiqueMode->load());
 

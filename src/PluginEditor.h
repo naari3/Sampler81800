@@ -312,7 +312,7 @@ private:
     Knob* kStart = nullptr; Knob* kEnd = nullptr;
     Knob* kPTime = nullptr; Knob* kPCurve = nullptr; Knob* kGroup = nullptr;
     Knob* kMaxV = nullptr;  Knob* kBend = nullptr;
-    Knob* kStretch = nullptr; Knob* kFormant = nullptr;
+    Knob* kStretch = nullptr;   // FORMANT は UI から外したのでノブは持たない
     Combo* cInterp = nullptr; Combo* cPMode = nullptr; Combo* cPShape = nullptr; Combo* cPoly = nullptr;
     Combo* cAlgo = nullptr; Combo* cDur = nullptr; Combo* cSync = nullptr;
 

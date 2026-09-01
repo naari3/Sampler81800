@@ -211,6 +211,11 @@ import ("./juce-index.js").then ((juce) => {
   }
 
   //================================================================ combo / toggle
+  // UI から隠す選択肢（値は C++ 側にそのまま残っている）。
+  // Granular / Stretch Library はプラグイン上だと無音になる問題があるため外している。
+  // 直ったらこの配列から抜くだけでよい。エンジン本体とテストは残してある。
+  const HIDDEN_CHOICES = { algorithm: [3, 4] };
+
   for (const id of ["algorithm", "durationMode", "syncLength", "portaMode",
                     "polyMode", "portaShape", "interpQuality", "elastiqueMode"]) {
     const sel = document.getElementById ("sel-" + id);
@@ -219,13 +224,20 @@ import ("./juce-index.js").then ((juce) => {
 
     const fill = () => {
       const items = state.properties.choices || [];
+      const cur   = state.getChoiceIndex();
+      const hide  = HIDDEN_CHOICES[id] || [];
       sel.innerHTML = "";
       items.forEach ((label, i) => {
+        // 選択肢は C++ 側では消せない（正規化値で保存されるので、抜くと index がずれて
+        // 既存プロジェクトの選択が別物に化ける。規約12）。UI からだけ隠す。
+        // ただし今まさに選ばれている値は、隠す対象でも出す（空欄になって何が選ばれて
+        // いるのか分からなくなるのを防ぐ）。
+        if (hide.includes (i) && i !== cur) return;
         const o = document.createElement ("option");
         o.value = i; o.textContent = label;
         sel.appendChild (o);
       });
-      sel.value = String (state.getChoiceIndex());
+      sel.value = String (cur);
       updateEnablement();
     };
     state.propertiesChangedEvent.addListener (fill);
@@ -272,12 +284,7 @@ import ("./juce-index.js").then ((juce) => {
     const isReaper = (algo === 5);
     const isPV     = (algo === 2);
 
-    // フォルマントが実際に効くのは2つだけ。
-    //   - REAPER 上の REAPER Shifter（élastique の set_formant_shift に渡る）
-    //   - Phase Vocoder（自前の包絡シフト）
-    // REAPER 外の élastique 直読みには入口が無いので、そこでは触れないようにする
-    // （以前は有効に見えていたが、動かしてもキャッシュが作り直されるだけだった）。
-    dimKnob ("formant",    (isReaper && reaperAvailable) || isPV);
+    // FORMANT は UI から外した（index.html 参照）。ここで dim を指定する対象も無い。
     dimKnob ("stretchAmount", dur === 2);      // Stretch は Manual のみ
     dimKnob ("portaTime",  por !== 0);         // Glide / Curve / Group は Porta が Off でないとき
     dimKnob ("portaCurve", por !== 0);
@@ -290,17 +297,6 @@ import ("./juce-index.js").then ((juce) => {
 
     dimEl (document.getElementById ("sel-syncLength"), dur === 1);   // Sync 長は Duration=Sync のみ
     dimEl (document.getElementById ("chk-phaseLock"),  isPV);        // Phase Lock は Phase Vocoder のみ
-
-    // Granular / Stretch Library は無音になる問題で一時的に無効。
-    // 選択肢は state 互換のため残してあるので、UI 側で選べなくする。
-    const selAlgo = document.getElementById ("sel-algorithm");
-    if (selAlgo && selAlgo.options.length >= 5) {
-      for (const i of [3, 4]) {
-        selAlgo.options[i].disabled = true;
-        if (! /（無効）$/.test (selAlgo.options[i].textContent))
-          selAlgo.options[i].textContent += "（無効）";
-      }
-    }
 
     const rc = isReaper && reaperAvailable;
     dimEl (selRMode, rc); dimEl (selRSub, rc);

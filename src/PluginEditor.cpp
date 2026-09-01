@@ -61,7 +61,8 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     kMaxV  = &addKnob (P::maxVoices,   "Voices",rotary);
     kBend  = &addKnob (P::bendRange,   "Bend",  rotary);
     kStretch = &addKnob (P::stretchAmount, "Stretch", linear);   // 横フェーダー
-    kFormant = &addKnob (P::formant,       "Formnt",  rotary);
+    // FORMANT は UI から外している（実装が使い物にならないため）。
+    // パラメータは APVTS に残っているので state 互換は保たれる（規約12）。
 
     // Root は音名表示（例: C#4）。C4=60 表記。右クリック鍵盤や検出とも連動。
     kRoot->slider.textFromValueFunction = [] (double v)
@@ -80,6 +81,13 @@ OtoMadSamplerEditor::OtoMadSamplerEditor (OtoMadSamplerProcessor& p)
     cPMode  = &addCombo (P::portaMode,     "Porta",  { "Off", "Legato", "Always" });
     cAlgo   = &addCombo (P::algorithm,     "Algo",
                          { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" });
+    // Granular / Stretch Library はプラグイン上だと無音になる問題があるため出さない。
+    // ネイティブ版は ComboBoxAttachment が「項目ID = 選択肢の並び順」を前提にしているので、
+    // Web UI のように項目ごと消すとパラメータとの対応が壊れる。ここは選べなくするに留める。
+    // （出荷しているのは Web UI 側。こちらは比較用ビルド OTOMAD_WEB_UI=0 でのみ使う）
+    for (int idx : { 3, 4 })
+        cAlgo->box.setItemEnabled (idx + 1, false);
+
     cDur    = &addCombo (P::durationMode,  "Duration", { "Natural", "Sync", "Manual" });
     cSync   = &addCombo (P::syncLength,    "Sync",   { "1/4", "1/2", "1", "2", "4" });
 
@@ -276,7 +284,6 @@ void OtoMadSamplerEditor::timerCallback()
     const bool isPV     = (algo == 2);
     const bool isVari   = (algo == 0);
 
-    enableKnob  (kFormant, isReaper);                 // フォルマントは REAPER キャッシュのみ焼き込み
     juce::ignoreUnused (isVari);
     enableKnob  (kStretch, dur == 2);                 // Stretch は Manual のみ
     enableCombo (cSync,    dur == 1);                 // Sync Length は Sync のみ
@@ -476,18 +483,19 @@ void OtoMadSamplerEditor::layoutContent()
         placeCombo (cPMode, cell (row, c - 1));
         curveDisplay.setBounds (row.reduced (4));
     }
-    // row4: [Algo][Duration][Sync] Stretch Formant [R.Mode combo][R.Sub combo] [PhaseLock]
+    // row4: [Algo][Duration][Sync] Stretch [R.Mode combo][R.Sub combo] [PhaseLock]
     {
         auto row = rowRect(); int c = 8;
         placeCombo (cAlgo, cell (row, c)); placeCombo (cDur, cell (row, c - 1)); placeCombo (cSync, cell (row, c - 2));
-        place (kStretch, cell (row, c - 3)); place (kFormant, cell (row, c - 4));
+        place (kStretch, cell (row, c - 3));
         auto placeRawCombo = [] (juce::Label& lbl, juce::ComboBox& box, juce::Rectangle<int> a)
         {
             lbl.setBounds (a.removeFromTop (15));
             box.setBounds (a.removeFromTop (24));
         };
-        placeRawCombo (rModeLbl, rModeBox, cell (row, c - 5));
-        placeRawCombo (rSubLbl,  rSubBox,  cell (row, c - 6));
+        // FORMANT を外したぶん、以降を1つ詰める（空きセルを残さない）
+        placeRawCombo (rModeLbl, rModeBox, cell (row, c - 4));
+        placeRawCombo (rSubLbl,  rSubBox,  cell (row, c - 5));
         phaseLockButton.setBounds (row.reduced (4).withTrimmedTop (16));
     }
 }
