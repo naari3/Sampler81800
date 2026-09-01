@@ -50,12 +50,23 @@ public:
         if (semi < kMin || semi > kMax) return nullptr;
         return ready[(std::size_t) (semi - kMin)].load (std::memory_order_acquire);
     }
+    // 生成できない音程は最初から要求しない。
+    // élastique 直読みは ±24 半音を超えると必ず空を返すので、要求すると
+    //   「レンダ→空→ready にならない→また要求される」
+    // を延々と繰り返し、進捗バーが上がらないまま出っぱなしになる（＝生成が止まって見える）。
+    // 範囲外は要求せず、呼び出し側の Varispeed フォールバックに任せる（規約15）。
     void request (int semi) noexcept
     {
+        if (semi < reqLo.load (std::memory_order_relaxed)
+         || semi > reqHi.load (std::memory_order_relaxed)) return;
         if (semi < kMin || semi > kMax) return;
         const int bit = semi - kMin;
         req[(std::size_t) (bit >> 6)].fetch_or (1ull << (bit & 63), std::memory_order_release);
     }
+
+    // いま実際に生成できる半音範囲（configure が更新する。UI/プリウォームの参照用）。
+    void usableRange (int& lo, int& hi) const noexcept
+    { lo = reqLo.load (std::memory_order_relaxed); hi = reqHi.load (std::memory_order_relaxed); }
     // プリウォーム: 未生成の音程域をまとめてリクエスト（停止中に背景で貯める）。
     void requestRange (int lo, int hi) noexcept
     {
@@ -105,6 +116,11 @@ private:
 
     host::ReaperApi*       api       = nullptr;
     const ElastiqueDirect* elastique = nullptr;
+
+    // 生成可能な半音範囲。バックエンド（REAPER / élastique 直読み / 無し）で変わるので
+    // configure（メッセージスレッド）が更新し、request からは atomic で読むだけにする。
+    std::atomic<int> reqLo { kMin };
+    std::atomic<int> reqHi { kMax };
 
     std::array<std::atomic<const SampleBuffer*>, (std::size_t) kN> ready {};
     std::array<std::atomic<std::uint64_t>, (std::size_t) kWords> req {};

@@ -25,6 +25,7 @@ add_executable(otomad_tests
     test_voice_engines.cpp
     test_vibrato.cpp
     test_pitchflatten.cpp
+    test_pitchcache.cpp
     ${CMAKE_SOURCE_DIR}/src/core/SourceReader.cpp
     ${CMAKE_SOURCE_DIR}/src/core/Voice.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/ReaperPitchShiftEngine.cpp
@@ -40,6 +41,8 @@ add_executable(otomad_tests
     ${CMAKE_SOURCE_DIR}/src/pitch/GranularEngine.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/StretchLibEngine.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/EngineResources.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/PitchCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/pitch/ElastiqueDirect.cpp
     ${CMAKE_SOURCE_DIR}/src/pitch/dsp/Fft.cpp)
 
 target_include_directories(otomad_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

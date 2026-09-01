@@ -68,10 +68,18 @@ public:
     enum Mode { Pro = 2, Soloist = 3 };
 
     /** そのモードで音程・レベルが信用できる半音範囲（実測）。範囲外は空を返す。 */
-    static void usableSemitoneRange (Mode mode, int& lo, int& hi) noexcept
+    // **両モードとも ±24 半音まで。** DLL のピッチ factor は [0.25, 4.0] しか受け付けず、
+    // それを外れると ProcessData が 0 を返さない＝出力が完全に空になる（音が変わるのではなく
+    // 何も出ない）。以前ここは Pro -39..+48 / Soloist -17..+41 としていたが、これは誤り。
+    //
+    // 実測（220Hz の倍音入り信号を -48..+48 半音でレンダし、期待周波数の近傍で自己相関）:
+    //   -48..-25 : 空
+    //   -24..+24 : 全て OK（最大誤差 17 cent、ピーク 0.555 で一定＝下方向でもレベルは落ちない）
+    //   +25..+48 : 空
+    // Pro / Soloist で結果は完全に同じだった。
+    static void usableSemitoneRange (Mode, int& lo, int& hi) noexcept
     {
-        if (mode == Soloist) { lo = -17; hi = 41; }   // 下限は makeup gain(最大8倍)で救える限界
-        else                 { lo = -39; hi = 48; }   // Pro
+        lo = -24; hi = 24;
     }
 
     /** オフラインで [base, base+n) をピッチシフトして返す。

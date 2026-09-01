@@ -32,6 +32,29 @@ bool PitchCache::configure (const SampleBuffer* src, int version, int mode, int 
     const float  sq = std::round (std::clamp (start01, 0.0f, 1.0f) * 1000.0f) / 1000.0f;   // 0.1%刻み
     const float  eq = std::round (std::clamp (end01,   0.0f, 1.0f) * 1000.0f) / 1000.0f;
 
+    // 生成できる半音範囲を先に更新する（設定が変わっていなくても、élastique の
+    // 読み込みが後から成功することがあるので毎回見直す）。
+    {
+        // REAPER のピッチシフト API が取れるならモード依存の制限は無い（全域）。
+        // 取れないときは élastique 直読みの制限（±24半音）に従う。どちらも無ければ
+        // キャッシュは作れないので何も要求しない。
+        bool reaperOk = false;
+        if (api != nullptr)
+            reaperOk = api->getFunction ("ReaperGetPitchShiftAPI") != nullptr;
+
+        int lo = kMin, hi = kMax;
+        if (! reaperOk)
+        {
+            if (elastique != nullptr && elastique->isAvailable())
+                ElastiqueDirect::usableSemitoneRange (elaMode == 1 ? ElastiqueDirect::Soloist
+                                                                   : ElastiqueDirect::Pro, lo, hi);
+            else
+            { lo = 1; hi = 0; }   // 空範囲＝一切要求しない
+        }
+        reqLo.store (lo, std::memory_order_relaxed);
+        reqHi.store (hi, std::memory_order_relaxed);
+    }
+
     std::lock_guard<std::mutex> lock (ownerLock);
     if (src == curSrc && version == curVersion && mode == curMode && sub == curSub
         && std::abs (sampleRate - curSr) < 1.0e-6
