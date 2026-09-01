@@ -206,17 +206,27 @@ FlattenResult flattenToSinglePitch (const std::vector<std::vector<float>>& in, i
     eng.prepare (ctx, res);
     eng.reset();
 
-    // エンジンは intrinsicLatency ぶん遅れて出るので、その分だけ余分に回して先頭を捨てる。
     const std::int64_t hopComp = res.pvHop;   // 補正カーブを前倒しする量（下の rp で使う）
-    const std::int64_t lat     = (std::int64_t) eng.getIntrinsicLatency();
-    const std::int64_t total = numSamples + lat;
+
+    // ---- 先頭の「プチッ」対策: 素材の手前から助走させる ----
+    // OLA は窓和で割って正規化するが、**先頭は最初のフレームしか重なっていない**。
+    // Hann 窓は端が 0 なので窓和もほぼ 0 になり、割れずに数十サンプルが 0 に潰れて、
+    // その直後に本来の振幅へ跳ぶ＝段差になる。
+    // 先頭を読み飛ばしても、今度は波形の途中から始まって無音から跳ぶので同じこと
+    // （実測: 入力先頭 0.035 に対し、512捨てると出力先頭 0.375）。
+    //
+    // 位置 0 より手前（範囲外＝無音）から回し始めると、位置 0 に届く時点で
+    // 窓和が定常になり 出力[0] = 入力[0] が成立する。助走ぶんは捨てる。
+    const std::int64_t preRoll = (std::int64_t) eng.getTailSamples();   // = OLAのフレーム長
+    const std::int64_t lat   = preRoll;
+    const std::int64_t total = numSamples + preRoll + (std::int64_t) eng.getTailSamples();
 
     std::vector<std::vector<float>> out ((std::size_t) numChannels,
                                          std::vector<float> ((std::size_t) total, 0.0f));
     std::vector<float*> ptrs ((std::size_t) numChannels);
     std::vector<float>  ratioBlk ((std::size_t) opt.blockSize, 1.0f);
 
-    double srcPos = 0.0;
+    double srcPos = -(double) preRoll;   // 助走: 範囲外は SourceReader が 0 を返す
     for (std::int64_t pos = 0; pos < total; pos += opt.blockSize)
     {
         const int nn = (int) std::min<std::int64_t> (opt.blockSize, total - pos);

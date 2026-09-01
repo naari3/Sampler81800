@@ -93,11 +93,11 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { bendRange, 1 }, "Bend Range", 0, 48, 2));
 
     // Phase 3: アルゴリズム / 長さ制御 / フォルマント（規約10/12: 選択肢は6個で固定, 縮小しない）
-    // 既定は WSOLA + Manual。Varispeed+Natural だと鍵盤を弾くたびに長さが変わるので、
-    // サンプラーとしては「長さを保ったままピッチだけ動く」ほうが扱いやすい。
-    // Manual の既定 stretchAmount は 1.0 なので、初期状態の長さは原音のまま。
+    // 既定は Varispeed。テープ早回しそのもので、音MADで最も素直に鳴る（加工臭が出ない）。
+    // Varispeed は timeRatio を無視して長さがピッチに従属するので、durationMode の既定が
+    // Manual でも初期状態の挙動は変わらない（長さを保ちたい人は WSOLA 以降を選ぶ）。
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { algorithm, 1 }, "Algorithm",
-                    StringArray { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" }, 1));
+                    StringArray { "Varispeed", "WSOLA", "Phase Vocoder", "Granular", "Stretch Library", "REAPER Shifter" }, 0));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { durationMode, 1 }, "Duration",
                     StringArray { "Natural", "Sync", "Manual" }, 2));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { syncLength, 1 }, "Sync Length",

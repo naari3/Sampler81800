@@ -191,3 +191,33 @@ TEST_CASE ("analyseOnly produces a contour without rendering audio", "[flatten]"
     REQUIRE (r.contour.midi.size() > 50);
     REQUIRE (r.contour.hopSeconds == Approx (0.010).margin (0.001));
 }
+
+TEST_CASE ("flatten does not click at the start of the sound", "[flatten]")
+{
+    // トリム直後の素材は先頭サンプルからいきなり音が入っている。
+    // OLA は窓和で割って正規化するが、先頭は最初のフレームしか重なっておらず
+    // 窓和がほぼ 0 なので、素直に回すと数十サンプルが 0 に潰れてその直後に本来の
+    // 振幅へ跳ぶ＝「プチッ」と鳴る。先頭を読み飛ばしても波形の途中から始まるだけで
+    // 同じこと。素材の手前（範囲外＝無音）から助走させて初めて段差が消える。
+    //
+    // 判定: 先頭の隣接サンプル差分が、定常部の差分を大きく超えないこと。
+    auto in = makeGlidingTone (1.2, [] (double t) { return 57.0 + std::sin (2.0 * 3.14159 * 3.0 * t); });
+    const auto n = (std::int64_t) in[0].size();
+
+    auto r = flattenToSinglePitch (in, 1, n, SR, 0, n);
+    REQUIRE (r.ok);
+
+    auto maxStep = [&r] (std::size_t from, std::size_t to)
+    {
+        double m = 0.0;
+        for (std::size_t i = std::max<std::size_t> (1, from); i < std::min (r.audio[0].size(), to); ++i)
+            m = std::max (m, std::abs ((double) r.audio[0][i] - (double) r.audio[0][i - 1]));
+        return m;
+    };
+
+    const double steady = maxStep ((std::size_t) (0.5 * SR), (std::size_t) (0.7 * SR));
+    const double head   = maxStep (0, (std::size_t) (0.02 * SR));   // 先頭 20ms
+    REQUIRE (steady > 1.0e-3);
+    // 修正前は 8.1 倍（0 が20サンプル続いた直後に +0.415 へ跳ぶ）だった。
+    REQUIRE (head < steady * 2.0);
+}
