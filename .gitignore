@@ -28,3 +28,6 @@ CMakeUserPresets.json
 
 # ---- misc ----
 *.log
+
+# インストーラーの出力（CI で作るのでコミットしない）
+/dist/

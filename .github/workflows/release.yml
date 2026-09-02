@@ -53,9 +53,48 @@ jobs:
           ( cd "$(dirname "$VST3")" && cmake -E tar cfv "$OUT" --format=zip "OtoMadSampler.vst3" )
           echo "packaged: $OUT"
 
+      # インストーラー。Inno Setup は windows ランナーに同梱されている。
+      # zip も残す: 手動で置きたい人と、SmartScreen の警告を避けたい人のため
+      # （.vst3 は DAW が読むだけなので SmartScreen の対象外だが、.exe は対象になる）。
+      - name: Build installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -e
+          VST3=$(find build -type d -name 'OtoMadSampler.vst3' | head -1)
+          VER="${GITHUB_REF_NAME#v}"
+          [ "$VER" = "$GITHUB_REF_NAME" ] && VER="0.0.0"   # タグ以外(workflow_dispatch)では仮の版
+          # ランナー標準で入っているが、イメージが変わって消えても落ちないようにする
+          ISCC=$(find /c/Program\ Files* -maxdepth 3 -name ISCC.exe 2>/dev/null | head -1)
+          if [ -z "$ISCC" ]; then
+            choco install innosetup -y --no-progress
+            ISCC=$(find /c/Program\ Files* -maxdepth 3 -name ISCC.exe 2>/dev/null | head -1)
+          fi
+          [ -n "$ISCC" ] || { echo "ISCC.exe not found"; exit 1; }
+          "$ISCC" //DAppVersion="$VER" //DVst3Dir="$(cygpath -w "$(dirname "$VST3")")" installer/OtoMadSampler.iss
+          ls -l dist/
+
+      # 署名は証明書があるときだけ。無いリポジトリ/フォークでも落とさない。
+      # 2023年6月以降 OV 証明書の鍵はハードウェア(HSM/トークン)必須なので、
+      # ここは「クラウド署名サービスの署名ステップを差し込む場所」として空けてある。
+      # 証明書を用意したら、この step をそのサービスの action に置き換える。
+      - name: Sign installer (skipped without a certificate)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.WINDOWS_SIGNING_CONFIGURED }}" ]; then
+            echo "署名用のシークレットが無いので未署名のまま配布します。"
+            echo "SmartScreen の回避手順は README を参照。"
+            exit 0
+          fi
+          echo "署名ステップが未実装です。証明書サービスの action をここに入れてください。"
+          exit 1
+
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: OtoMadSampler-${{ runner.os }}.zip
+          files: |
+            OtoMadSampler-${{ runner.os }}.zip
+            dist/*.exe
           generate_release_notes: true
