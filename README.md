@@ -82,8 +82,17 @@ DAW を再起動するか、プラグインの再スキャンを実行します�
 プラグイン側でバージョンを確認していて、新しいリリースがあるとエディタ右上にボタンが出ます。
 押すと Releases ページが開きます。
 
-更新は上書きコピーですが、**先に DAW を必ず終了してください。**
-起動中は DLL がロックされていて上書きに失敗します（失敗しても分かりにくいので注意）。
+**先に DAW を必ず終了してください。**
+起動中は DLL がロックされていて置き換えに失敗します（失敗しても分かりにくいので注意）。
+
+- **インストーラー版**: 新しいインストーラーをそのまま実行します。アンインストールは不要で、
+  上書きされます。
+- **zip 版**: 展開した `OtoMadSampler.vst3` フォルダを上書きコピーします。
+
+インストーラー版と zip 版を混ぜても構いません。置き先が同じなので、
+どちらで入れたものでも新しい方に置き換わります。
+ただしインストーラーで入れたものを zip で上書きした場合、
+アンインストール情報は古いバージョンのまま残ります。
 
 設定（配色・背景画像・外部ツールのパス）は
 
@@ -92,6 +101,18 @@ DAW を再起動するか、プラグインの再スキャンを実行します�
 ```
 
 に保存されます。上書き更新しても消えません。
+
+---
+
+## アンインストール
+
+- **インストーラーで入れた場合**: Windows の「設定 → アプリ → インストールされているアプリ」
+  から `OtoMadSampler` を削除します。プラグイン本体と、インストーラーが作ったフォルダの
+  両方が消えます。
+- **zip で入れた場合**: `C:\Program Files\Common Files\VST3\OtoMadSampler.vst3` フォルダを削除します。
+
+どちらの場合も設定（配色・背景画像・外部ツールのパス）は残ります。消すなら
+`%APPDATA%\OtoMadSampler\` を削除してください。
 
 ---
 
@@ -174,6 +195,25 @@ Web UI を静的リンクするため、WebView2 SDK（NuGet の
 
 VST3 に加えて Standalone もビルドされます（`build/OtoMadSampler_artefacts/`）。
 現状 Standalone はリリースに同梱していないので、使いたい場合はビルドしてください。
+
+### インストーラーを作る
+
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) が必要です。
+
+```
+ISCC.exe /DAppVersion=0.5.0 ^
+         /DVst3Dir=<OtoMadSampler.vst3 の親フォルダ> ^
+         installer\OtoMadSampler.iss
+```
+
+`dist\OtoMadSampler-<版>-Windows-Setup.exe` ができます。
+タグを push すると CI が同じものを作って Release に添付します
+（[.github/workflows/release.yml](.github/workflows/release.yml)）。
+
+配布物には**コード署名をしていません**。署名を入れる場合は、CI の
+`Sign installer` ステップを証明書サービスの action に差し替えてください。
+2023年6月以降、OV コード署名証明書の秘密鍵はハードウェア（HSM / USBトークン）
+必須になったため、`.pfx` を CI のシークレットに置く方式は使えません。
 
 設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)、開発上の不変条件は [CLAUDE.md](CLAUDE.md) にあります。
 
