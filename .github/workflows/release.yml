@@ -90,6 +90,9 @@ jobs:
           echo "署名ステップが未実装です。証明書サービスの action をここに入れてください。"
           exit 1
 
+      # 毎回リリースノートの先頭に導入手順を入れる。文面は .github/release-body.md。
+      # generate_release_notes と併用すると、GitHub が自動生成した変更履歴を
+      # この本文の**後ろ**に足してくれる。
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -97,4 +100,5 @@ jobs:
           files: |
             OtoMadSampler-${{ runner.os }}.zip
             dist/*.exe
+          body_path: .github/release-body.md
           generate_release_notes: true
