@@ -22,6 +22,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 変更点をタグ間の git log から作るので全履歴とタグが要る。
+          # 既定の shallow clone だと前のタグが見えず一覧が空になる。
+          fetch-depth: 0
 
       # Web UI は WebView2 を静的リンクする。JUCE の FindWebView2 は
       # ユーザーの NuGet パッケージフォルダを見るので、ランナーにも入れておく。
@@ -107,9 +111,42 @@ jobs:
             dist/*.exe
           if-no-files-found: error
 
-      # 毎回リリースノートの先頭に導入手順を入れる。文面は .github/release-body.md。
-      # generate_release_notes と併用すると、GitHub が自動生成した変更履歴を
-      # この本文の**後ろ**に足してくれる。
+      # リリースノートを組み立てる。
+      # generate_release_notes は **PR からしか変更点を作らない**ので、main に
+      # 直接コミットしているこのリポジトリでは Full Changelog のリンクしか出ない。
+      # 前のタグからのコミット件名を並べて「変更点」にする。
+      - name: Build release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -e
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          HAND=".github/release-notes/${GITHUB_REF_NAME}.md"
+          {
+            if [ -f "$HAND" ]; then
+              # 手書きがあればそれを使う。コミット件名をそのまま並べると
+              # 途中の試行錯誤（入れて→撤回した変更など）まで出てしまうので、
+              # 出すものを選びたい版はここに書く。
+              cat "$HAND"
+            else
+              echo "## 変更点"
+              echo
+              if [ -n "$PREV" ]; then
+                echo "$PREV から:"
+                echo
+                git log --no-merges --pretty='- %s' "$PREV..${GITHUB_REF_NAME}"
+              else
+                git log --no-merges --pretty='- %s' "${GITHUB_REF_NAME}"
+              fi
+            fi
+            echo
+            cat .github/release-body.md
+          } > release-notes.md
+          echo "---- 生成したノート ----"
+          cat release-notes.md
+
+      # 導入手順の文面は .github/release-body.md。generate_release_notes と併用すると
+      # GitHub が作る Full Changelog のリンクが本文の**後ろ**に付く。
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -117,5 +154,5 @@ jobs:
           files: |
             OtoMadSampler-${{ runner.os }}.zip
             dist/*.exe
-          body_path: .github/release-body.md
+          body_path: release-notes.md
           generate_release_notes: true
