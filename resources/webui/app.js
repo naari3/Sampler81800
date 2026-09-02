@@ -130,6 +130,7 @@ import ("./juce-index.js").then ((juce) => {
   const nfPitchContour    = getNativeFunction ("pitchContour");
   const nfFlattenState    = getNativeFunction ("flattenState");
   const nfParamHelp       = getNativeFunction ("paramHelp");
+  const nfReady           = getNativeFunction ("ready");
 
   //================================================================ knobs
   // SVG で描く（conic-gradient より線端・アンチエイリアスが綺麗）。
@@ -1215,6 +1216,7 @@ import ("./juce-index.js").then ((juce) => {
   refreshFlatten();
   layoutCanvases();
   statusEl.textContent = "ready";
+  nfReady();   // イベント購読が揃ったので status を送り直してもらう
 }).catch (e => showError (String (e && e.message ? e.message : e)));
 
 //================================================================ canvas sizing

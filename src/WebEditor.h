@@ -65,6 +65,7 @@ private:
     void nfPitchContour  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfFlattenState  (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
     void nfParamHelp     (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
+    void nfReady         (const juce::Array<juce::var>&, juce::WebBrowserComponent::NativeFunctionCompletion);
 
     // スライダ/コンボ/トグルのリレー＋アタッチメント
     template <typename RelayT, typename AttachT>
