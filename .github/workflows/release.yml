@@ -71,7 +71,12 @@ jobs:
             ISCC=$(find /c/Program\ Files* -maxdepth 3 -name ISCC.exe 2>/dev/null | head -1)
           fi
           [ -n "$ISCC" ] || { echo "ISCC.exe not found"; exit 1; }
-          "$ISCC" //DAppVersion="$VER" //DVst3Dir="$(cygpath -w "$(dirname "$VST3")")" installer/OtoMadSampler.iss
+          # **絶対パスで渡すこと。** Inno は [Files] の Source の相対パスを .iss の
+          # あるフォルダ基準で解決するので、find が返す相対パス(build/...)をそのまま
+          # 渡すと installer/build/... を探して "No files found" になる。
+          # cygpath -w は相対パスを絶対にしてくれないので、先に pwd で絶対化する。
+          VST3DIR=$(cd "$(dirname "$VST3")" && pwd)
+          "$ISCC" //DAppVersion="$VER" //DVst3Dir="$(cygpath -w "$VST3DIR")" installer/OtoMadSampler.iss
           ls -l dist/
 
       # 署名は証明書があるときだけ。無いリポジトリ/フォークでも落とさない。
@@ -89,6 +94,18 @@ jobs:
           fi
           echo "署名ステップが未実装です。証明書サービスの action をここに入れてください。"
           exit 1
+
+      # タグを打たない実行(workflow_dispatch)でも成果物を取り出せるようにする。
+      # インストーラーはローカルと CI で環境が違って壊れやすいので
+      # （実際 Source の相対パス解決で一度壊した）、リリース前に確認できる口を残す。
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OtoMadSampler-${{ runner.os }}
+          path: |
+            OtoMadSampler-${{ runner.os }}.zip
+            dist/*.exe
+          if-no-files-found: error
 
       # 毎回リリースノートの先頭に導入手順を入れる。文面は .github/release-body.md。
       # generate_release_notes と併用すると、GitHub が自動生成した変更履歴を
