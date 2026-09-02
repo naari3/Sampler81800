@@ -976,10 +976,14 @@ import ("./juce-index.js").then ((juce) => {
     bar.hidden = ! s.cacheBusy;
     if (s.cacheBusy) {
       fill.style.width = Math.round (s.cacheProgress * 100) + "%";
+      // 件数は出す。「0% で止まる」と言われたときに、生成済みが 0 なのか
+      // 分母がおかしいのかを利用者の画面だけで切り分けられる。
       const done = s.cacheReady | 0, left = s.cachePending | 0;
       text.textContent = "キャッシュ生成中 " + Math.round (s.cacheProgress * 100) + "%"
-                       + "  (" + done + "/" + (done + left) + ")"
-                       + (s.cacheDebug ? "  [" + s.cacheDebug + "]" : "");
+                       + "  (" + done + "/" + (done + left) + ")";
+      // 開発用の内部状態（世代 / 変化理由 / 稼働ジョブ数 / 失敗数）。
+      // 配布ビルドには出さない。切り分けが要るときだけ次の1行を有効にする。
+      // text.textContent += s.cacheDebug ? "  [" + s.cacheDebug + "]" : "";
     }
     // 空文字＝REAPER でもなく élastique も未設定。何をすれば使えるかまで出す。
     document.getElementById ("reaper-info").textContent =
