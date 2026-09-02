@@ -71,6 +71,60 @@ Type: filesandordirs; Name: "{commoncf64}\VST3\OtoMadSampler.vst3"
 ; 発行元フォルダは他製品が入っている可能性があるので、空のときだけ消す
 Type: dirifempty; Name: "{autopf}\{#Publisher}"
 
+[Code]
+// DAW がプラグインを掴んでいると、置き換えが「アクセスが拒否されました」で失敗する。
+// **そのとき Inno はロールバックして、既に入っていたファイルまで消してしまう**
+// （実際に Contents\Resources が消えて、前のインストールが壊れた）。
+// なのでファイルに触る前に検出して、何もせずに止める。
+//
+// 「使用中か」は非破壊には調べにくい。ロードされた DLL でも名前変更は通るので、
+// 書き込み用に共有無しで開けるかどうかで判定する。開けなければ誰かが掴んでいる。
+
+// FILE_ATTRIBUTE_NORMAL は Inno が既に定義しているので再定義しない
+const
+  GENERIC_WRITE        = $40000000;
+  OPEN_EXISTING        = 3;
+  INVALID_HANDLE_VALUE = -1;
+
+function CreateFileW(lpFileName: string; dwDesiredAccess, dwShareMode: Cardinal;
+  lpSecurityAttributes: Integer; dwCreationDisposition, dwFlagsAndAttributes: Cardinal;
+  hTemplateFile: Integer): Integer;
+  external 'CreateFileW@kernel32.dll stdcall';
+
+function CloseHandle(hObject: Integer): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function PluginIsInUse(): Boolean;
+var
+  Path: string;
+  H: Integer;
+begin
+  Path := ExpandConstant('{commoncf64}\VST3\OtoMadSampler.vst3\Contents\x86_64-win\OtoMadSampler.vst3');
+  if not FileExists(Path) then
+  begin
+    Result := False;   // 新規インストール
+    exit;
+  end;
+  // dwShareMode=0 ＝ 共有を許さずに開く。他が掴んでいれば失敗する。
+  H := CreateFileW(Path, GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+  Result := (H = INVALID_HANDLE_VALUE);
+  if not Result then
+    CloseHandle(H);
+end;
+
+// ファイルを1つも触っていない段階で呼ばれる。空でない文字列を返すと中止。
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if PluginIsInUse() then
+    Result := CustomMessage('PluginInUse')
+  else
+    Result := '';
+end;
+
+[CustomMessages]
+japanese.PluginInUse=OtoMadSampler が使用中です。%n%nDAW（REAPER / Ableton Live など）が起動していると、プラグインのファイルを置き換えられません。%n%nDAW をすべて終了してから、もう一度インストーラーを実行してください。
+english.PluginInUse=OtoMadSampler is currently in use.%n%nThe plug-in files cannot be replaced while a DAW (REAPER, Ableton Live, ...) is running.%n%nPlease close all DAWs and run this installer again.
+
 [Messages]
 japanese.WelcomeLabel2=このウィザードは [name/ver] をインストールします。%n%nDAW を起動したままだとファイルの上書きに失敗します。先に終了してください。%n%nインストール後、DAW を再起動するか、プラグインの再スキャンを実行してください。
 english.WelcomeLabel2=This will install [name/ver] on your computer.%n%nClose your DAW first - files cannot be replaced while it is running.%n%nAfter installing, restart your DAW or rescan plug-ins.
